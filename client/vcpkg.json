@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "mini-messenger-client",
+  "version-string": "0.1.0",
+  "description": "MINI Messenger desktop client",
+  "dependencies": [
+    "libsodium",
+    {
+      "name": "sqlite3",
+      "features": [
+        "fts5"
+      ]
+    }
+  ],
+  "builtin-baseline": "af839a44c17a927468f35c7a65e200aeba337da4"
+}

@@ -1,0 +1,60 @@
+# Секреты и локальные конфиги
+.env
+.env.*
+!.env.example
+deepseek.bat
+*.pem
+*.key
+update_private.key
+
+# Сборочные артефакты
+build/
+build-*/
+out/
+cmake-build-*/
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+vcpkg_installed/
+dist/
+
+# Секреты и данные проекта
+**/configs/server.toml
+**/configs/captcha.toml
+**/configs/master.key
+**/captcha.cfg
+**/connect.ip
+**/sign.in
+data/
+logs/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.log
+
+# Node
+node_modules/
+
+# ОС и редакторы
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Autopilot: рабочие файлы сервера дашборда
+.autopilot/serve.*
+
+# Поставка (создаётся в конце сборки)
+/MINI Messenger/
+/code/
