@@ -30,11 +30,19 @@ public:
 
     Result<bool> insertQueued(const Message &message);
     Result<bool> insertReceived(const Message &message);
+    // §49.2: import keeps the state, direction and timestamps from the file.
+    // Returns false when (chat_id, client_msg_id) is already stored.
+    Result<bool> insertImported(const Message &message);
     Result<bool> updateState(const QString &clientMsgId, MessageState state,
                              qint64 serverTs = 0, const QString &serverMsgId = QString());
     Result<QVector<Message>> listByChat(const QString &chatId, const MessageCursor &before = {},
                                         int limit = 50) const;
-    Result<int> markRead(const QString &chatId);
+    // §49.1: unpaged history for an archive, oldest first.
+    Result<QVector<Message>> listAllByChat(const QString &chatId) const;
+    // §39.2: the countdown starts when the incoming messages are read. A
+    // non-zero timer stamps expires_at on the rows this call marks as read.
+    Result<int> markRead(const QString &chatId, qint64 expiresAfterMs = 0,
+                         qint64 nowMs = 0);
     Result<bool> deleteLocal(const QString &clientMsgId);
     Result<QVector<Message>> search(const QString &query, int limit = 50) const;
     Result<QVector<Message>> searchInChat(const QString &chatId, const QString &query,
@@ -51,6 +59,13 @@ public:
                            qint64 pinnedAt, const QString &pinnedBy);
     Result<bool> unpin(const QString &chatId, const QString &clientMsgId);
     Result<QVector<Message>> pinned(const QString &chatId, int limit = 20) const;
+
+    // §39: outgoing messages start their countdown from the read receipt.
+    Result<int> applyReadExpiry(const QStringList &clientMsgIds, qint64 expiresAfterMs,
+                                qint64 nowMs);
+    // Rows whose expires_at has passed; the cleaner deletes them.
+    Result<QVector<Message>> expired(qint64 nowMs) const;
+    Result<QVector<Message>> removeExpired(qint64 nowMs);
 
     // §4.8: the FTS index is rebuilt from decrypted bodies at startup.
     Result<int> rebuildSearchIndex();

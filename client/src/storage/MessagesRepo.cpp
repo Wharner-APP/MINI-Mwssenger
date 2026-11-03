@@ -13,7 +13,7 @@ namespace {
 constexpr auto kColumns =
     "client_msg_id, chat_id, server_msg_id, sender_login, body, state, outgoing, "
     "local_ts, server_ts, reply_to, kind, media_id, media_name, media_size, "
-    "media_duration_ms, edited_at, forwarded_from";
+    "media_duration_ms, edited_at, forwarded_from, expires_at, poll_id, system";
 constexpr auto kEffectiveTs = "CASE WHEN server_ts > 0 THEN server_ts ELSE local_ts END";
 
 // FTS5 rejects raw user input as a query, so every token becomes a quoted
@@ -50,6 +50,9 @@ Message readMessage(const detail::Statement &statement, int offset = 0)
     message.mediaDurationMs = statement.int64(offset + 14);
     message.editedAt = statement.int64(offset + 15);
     message.forwardedFrom = statement.text(offset + 16);
+    message.expiresAt = statement.int64(offset + 17);
+    message.pollId = statement.text(offset + 18);
+    message.system = statement.boolean(offset + 19);
     return message;
 }
 
@@ -117,6 +120,11 @@ Result<bool> MessagesRepo::insertReceived(const Message &message)
     return insert(received);
 }
 
+Result<bool> MessagesRepo::insertImported(const Message &message)
+{
+    return insert(message);
+}
+
 Result<bool> MessagesRepo::insert(const Message &message)
 {
     if (message.clientMsgId.isEmpty() || message.chatId.isEmpty()) {
@@ -135,8 +143,8 @@ Result<bool> MessagesRepo::insert(const Message &message)
                 client_msg_id, chat_id, server_msg_id, sender_login, body, state,
                 outgoing, local_ts, server_ts, reply_to, kind, media_id,
                 media_name, media_size, media_duration_ms, edited_at,
-                forwarded_from)
-              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))sql");
+                forwarded_from, expires_at, poll_id, system)
+              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))sql");
     if (!statement.isOk()) {
         return Result<bool>::error(detail::sqlError(m_db.handle(), "messages.insert"));
     }
@@ -157,6 +165,9 @@ Result<bool> MessagesRepo::insert(const Message &message)
     statement.bindInt64(15, message.mediaDurationMs);
     statement.bindInt64(16, message.editedAt);
     statement.bindText(17, message.forwardedFrom);
+    statement.bindInt64(18, message.expiresAt);
+    statement.bindText(19, message.pollId);
+    statement.bindBool(20, message.system);
 
     if (statement.step() != SQLITE_DONE) {
         return Result<bool>::error(detail::sqlError(m_db.handle(), "messages.insert"));
@@ -267,7 +278,44 @@ Result<QVector<Message>> MessagesRepo::listByChat(const QString &chatId,
     return Result<QVector<Message>>::ok(messages);
 }
 
-Result<int> MessagesRepo::markRead(const QString &chatId)
+Result<QVector<Message>> MessagesRepo::listAllByChat(const QString &chatId) const
+{
+    const QString sql = QStringLiteral(
+                            "SELECT %1 FROM messages WHERE chat_id = ? "
+                            "AND state <> 'deleted_local' "
+                            "ORDER BY %2 ASC, client_msg_id ASC")
+                            .arg(QString::fromLatin1(kColumns),
+                                 QString::fromLatin1(kEffectiveTs));
+
+    detail::Statement statement(m_db.handle(), sql.toUtf8().constData());
+    if (!statement.isOk()) {
+        return Result<QVector<Message>>::error(
+            detail::sqlError(m_db.handle(), "messages.listAllByChat"));
+    }
+    statement.bindText(1, chatId);
+
+    QVector<Message> messages;
+    int rc = statement.step();
+    while (rc == SQLITE_ROW) {
+        Message message = readMessage(statement);
+        auto body = m_cipher.decrypt(statement.blob(4),
+                                     messageAad(message.chatId, message.clientMsgId));
+        if (body.isError()) {
+            return Result<QVector<Message>>::error(
+                QStringLiteral("cannot decrypt message %1").arg(message.clientMsgId));
+        }
+        message.body = body.value();
+        messages.push_back(message);
+        rc = statement.step();
+    }
+    if (rc != SQLITE_DONE) {
+        return Result<QVector<Message>>::error(
+            detail::sqlError(m_db.handle(), "messages.listAllByChat"));
+    }
+    return Result<QVector<Message>>::ok(messages);
+}
+
+Result<int> MessagesRepo::markRead(const QString &chatId, qint64 expiresAfterMs, qint64 nowMs)
 {
     int updated = 0;
     auto result = m_db.transaction([&](Database &tx) -> Result<bool> {
@@ -279,6 +327,28 @@ Result<int> MessagesRepo::markRead(const QString &chatId)
         reset.bindText(1, chatId);
         if (reset.step() != SQLITE_DONE) {
             return Result<bool>::error(detail::sqlError(tx.handle(), "messages.markRead"));
+        }
+
+        // §39.2: reading starts the countdown. Stamp the rows this call is
+        // about to flip from received/delivered so older read messages keep
+        // their original deadline (or none).
+        const bool timer = expiresAfterMs > 0;
+        if (timer) {
+            const qint64 now = nowMs > 0 ? nowMs : QDateTime::currentMSecsSinceEpoch();
+            detail::Statement expiry(
+                tx.handle(),
+                "UPDATE messages SET expires_at = ? WHERE chat_id = ? AND outgoing = 0 "
+                "AND expires_at = 0 AND state IN ('received', 'delivered')");
+            if (!expiry.isOk()) {
+                return Result<bool>::error(
+                    detail::sqlError(tx.handle(), "messages.markRead.expiry"));
+            }
+            expiry.bindInt64(1, now + expiresAfterMs);
+            expiry.bindText(2, chatId);
+            if (expiry.step() != SQLITE_DONE) {
+                return Result<bool>::error(
+                    detail::sqlError(tx.handle(), "messages.markRead.expiry"));
+            }
         }
 
         detail::Statement incoming(
@@ -299,6 +369,127 @@ Result<int> MessagesRepo::markRead(const QString &chatId)
         return Result<int>::error(result.error());
     }
     return Result<int>::ok(updated);
+}
+
+Result<int> MessagesRepo::applyReadExpiry(const QStringList &clientMsgIds,
+                                          qint64 expiresAfterMs, qint64 nowMs)
+{
+    if (expiresAfterMs <= 0 || clientMsgIds.isEmpty()) {
+        return Result<int>::ok(0);
+    }
+    const qint64 now = nowMs > 0 ? nowMs : QDateTime::currentMSecsSinceEpoch();
+    int updated = 0;
+    for (const QString &clientMsgId : clientMsgIds) {
+        detail::Statement statement(
+            m_db.handle(),
+            "UPDATE messages SET expires_at = ? WHERE client_msg_id = ? AND expires_at = 0");
+        if (!statement.isOk()) {
+            return Result<int>::error(
+                detail::sqlError(m_db.handle(), "messages.applyReadExpiry"));
+        }
+        statement.bindInt64(1, now + expiresAfterMs);
+        statement.bindText(2, clientMsgId);
+        if (statement.step() != SQLITE_DONE) {
+            return Result<int>::error(
+                detail::sqlError(m_db.handle(), "messages.applyReadExpiry"));
+        }
+        updated += sqlite3_changes(m_db.handle());
+    }
+    return Result<int>::ok(updated);
+}
+
+Result<QVector<Message>> MessagesRepo::expired(qint64 nowMs) const
+{
+    detail::Statement statement(
+        m_db.handle(),
+        QStringLiteral("SELECT %1 FROM messages WHERE expires_at > 0 AND expires_at <= ? "
+                       "ORDER BY expires_at ASC LIMIT 500")
+            .arg(QString::fromLatin1(kColumns))
+            .toUtf8()
+            .constData());
+    if (!statement.isOk()) {
+        return Result<QVector<Message>>::error(
+            detail::sqlError(m_db.handle(), "messages.expired"));
+    }
+    statement.bindInt64(1, nowMs);
+    QVector<Message> messages;
+    int rc = statement.step();
+    while (rc == SQLITE_ROW) {
+        Message message = readMessage(statement);
+        const auto body = m_cipher.decrypt(statement.blob(4),
+                                           messageAad(message.chatId, message.clientMsgId));
+        if (body.isOk()) {
+            message.body = body.value();
+        }
+        messages.push_back(message);
+        rc = statement.step();
+    }
+    if (rc != SQLITE_DONE) {
+        return Result<QVector<Message>>::error(
+            detail::sqlError(m_db.handle(), "messages.expired"));
+    }
+    return Result<QVector<Message>>::ok(messages);
+}
+
+Result<QVector<Message>> MessagesRepo::removeExpired(qint64 nowMs)
+{
+    if (auto indexed = ensureSearchIndex(); indexed.isError()) {
+        return Result<QVector<Message>>::error(indexed.error());
+    }
+    QVector<Message> removed;
+    auto result = m_db.transaction([&](Database &tx) -> Result<bool> {
+        detail::Statement select(
+            tx.handle(),
+            "SELECT rowid, client_msg_id, chat_id, media_id FROM messages "
+            "WHERE expires_at > 0 AND expires_at <= ?");
+        if (!select.isOk()) {
+            return Result<bool>::error(
+                detail::sqlError(tx.handle(), "messages.removeExpired"));
+        }
+        select.bindInt64(1, nowMs);
+        int rc = select.step();
+        while (rc == SQLITE_ROW) {
+            Message message;
+            message.clientMsgId = select.text(1);
+            message.chatId = select.text(2);
+            message.mediaId = select.text(3);
+            message.expiresAt = nowMs;
+            removed.push_back(message);
+
+            detail::Statement fts(tx.handle(),
+                                  "DELETE FROM temp.messages_fts WHERE rowid = ?");
+            if (!fts.isOk()) {
+                return Result<bool>::error(
+                    detail::sqlError(tx.handle(), "messages.removeExpired.fts"));
+            }
+            fts.bindInt64(1, select.int64(0));
+            if (fts.step() != SQLITE_DONE) {
+                return Result<bool>::error(
+                    detail::sqlError(tx.handle(), "messages.removeExpired.fts"));
+            }
+            rc = select.step();
+        }
+        if (rc != SQLITE_DONE) {
+            return Result<bool>::error(
+                detail::sqlError(tx.handle(), "messages.removeExpired"));
+        }
+        detail::Statement drop(
+            tx.handle(), "DELETE FROM messages WHERE expires_at > 0 AND expires_at <= ?");
+        if (!drop.isOk()) {
+            return Result<bool>::error(
+                detail::sqlError(tx.handle(), "messages.removeExpired"));
+        }
+        drop.bindInt64(1, nowMs);
+        if (drop.step() != SQLITE_DONE) {
+            return Result<bool>::error(
+                detail::sqlError(tx.handle(), "messages.removeExpired"));
+        }
+        return Result<bool>::ok(true);
+    });
+    if (result.isError()) {
+        return Result<QVector<Message>>::error(result.error());
+    }
+    return Result<QVector<Message>>::ok(removed);
 }
 
 Result<bool> MessagesRepo::deleteLocal(const QString &clientMsgId)

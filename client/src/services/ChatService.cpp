@@ -115,6 +115,10 @@ void ChatService::openDirectChat(const QString &peerLogin, Done<Chat> done)
     chat.peerLogin = valid.value();
     chat.title = valid.value();
     chat.updatedAt = Clock::nowMs();
+    // §44.1: every bot login ends with `_bot`. Mark the chat here as well so
+    // opening a bot by exact login cannot fall into the E2E pipeline.
+    chat.isBot = valid.value().toLower().endsWith(QLatin1String("_bot"));
+    chat.e2e = !chat.isBot;
 
     auto future = m_storage->submit([chat](storage::Database &db) {
         storage::ChatsRepo repo(db);
@@ -218,7 +222,12 @@ void ChatService::markRead(const QString &chatId, Done<int> done)
         return;
     }
     auto future = m_storage->submit([chatId](storage::Database &db) {
-        return storage::MessagesRepo(db).markRead(chatId);
+        // §39.2: reading starts the disappearing countdown for incoming mail.
+        auto chat = storage::ChatsRepo(db).get(chatId);
+        const qint64 after = chat.isOk() && chat.value().has_value()
+            ? chat.value()->expiresAfterMs
+            : 0;
+        return storage::MessagesRepo(db).markRead(chatId, after, Clock::nowMs());
     });
     watch<Result<int>>(this, future, [this, chatId, done = std::move(done)](Result<int> result) {
         if (result.isOk() && result.value() > 0) {

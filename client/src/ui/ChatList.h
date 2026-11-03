@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/Chat.h"
+#include "domain/ChatFolder.h"
 #include "services/SearchService.h"
 
 #include <QHash>
@@ -66,6 +67,11 @@ public:
     void setFilterMode(FilterMode mode);
     [[nodiscard]] FilterMode filterMode() const { return m_filterMode; }
 
+    // §48: the folder rail narrows the list by the folder rules. An empty id
+    // means "All" and clears the restriction.
+    void setActiveFolder(const ChatFolder &folder);
+    [[nodiscard]] QString activeFolderId() const { return m_folder.id; }
+
     void setChatService(services::ChatService *service);
     [[nodiscard]] services::ChatService *chatService() const { return m_chatService; }
     void setSearchService(services::SearchService *service);
@@ -121,6 +127,7 @@ private:
     QVector<Chat> m_chats;
     QHash<QString, QPair<bool, qint64>> m_presence;
     FilterMode m_filterMode = FilterMode::All;
+    ChatFolder m_folder;
 };
 
 } // namespace mini

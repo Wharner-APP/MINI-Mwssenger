@@ -11,7 +11,7 @@ namespace {
 
 constexpr auto kColumns =
     "chat_id, kind, peer_login, title, last_message_ts, last_message_preview, "
-    "unread_count, pinned, muted, updated_at, muted_until, archived";
+    "unread_count, pinned, muted, updated_at, muted_until, archived, expires_after_ms";
 
 Chat readChat(const detail::Statement &statement, const BodyCipher &cipher)
 {
@@ -34,6 +34,12 @@ Chat readChat(const detail::Statement &statement, const BodyCipher &cipher)
             || chat.mutedUntil > QDateTime::currentMSecsSinceEpoch());
     chat.updatedAt = statement.int64(9);
     chat.archived = statement.boolean(11);
+    chat.expiresAfterMs = statement.int64(12);
+    // §44.1: every bot login ends with `_bot`; a direct chat with one is a bot
+    // chat and is not E2E. Deriving this on read keeps the label after restart.
+    chat.isBot = chat.kind == QLatin1String("direct")
+        && chat.peerLogin.toLower().endsWith(QLatin1String("_bot"));
+    chat.e2e = !chat.isBot;
     return chat;
 }
 
@@ -116,8 +122,9 @@ Result<bool> ChatsRepo::upsert(const Chat &chat)
     detail::Statement statement(
         m_db.handle(),
         R"sql(INSERT INTO chats(chat_id, kind, peer_login, title, last_message_ts,
-                                last_message_preview, unread_count, pinned, muted, updated_at)
-              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                last_message_preview, unread_count, pinned, muted, updated_at,
+                                expires_after_ms)
+              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(chat_id) DO UPDATE SET
                   kind = excluded.kind,
                   peer_login = excluded.peer_login,
@@ -136,6 +143,7 @@ Result<bool> ChatsRepo::upsert(const Chat &chat)
     statement.bindBool(8, chat.pinned);
     statement.bindBool(9, chat.muted);
     statement.bindInt64(10, chat.updatedAt);
+    statement.bindInt64(11, chat.expiresAfterMs);
 
     if (statement.step() != SQLITE_DONE) {
         return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.upsert"));
@@ -200,6 +208,27 @@ Result<bool> ChatsRepo::setArchived(const QString &chatId, bool archived)
     statement.bindText(2, chatId);
     if (statement.step() != SQLITE_DONE) {
         return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setArchived"));
+    }
+    return Result<bool>::ok(sqlite3_changes(m_db.handle()) > 0);
+}
+
+Result<bool> ChatsRepo::setExpiresAfter(const QString &chatId, qint64 milliseconds)
+{
+    // §39.1: only the six values from the brief are accepted.
+    if (milliseconds != 0 && milliseconds != 60LL * 1000 && milliseconds != 5LL * 60 * 1000
+        && milliseconds != 60LL * 60 * 1000 && milliseconds != 24LL * 60 * 60 * 1000
+        && milliseconds != 7LL * 24 * 60 * 60 * 1000) {
+        return Result<bool>::error(QStringLiteral("expiry.invalid"));
+    }
+    detail::Statement statement(
+        m_db.handle(), "UPDATE chats SET expires_after_ms = ? WHERE chat_id = ?");
+    if (!statement.isOk()) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setExpiresAfter"));
+    }
+    statement.bindInt64(1, milliseconds);
+    statement.bindText(2, chatId);
+    if (statement.step() != SQLITE_DONE) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setExpiresAfter"));
     }
     return Result<bool>::ok(sqlite3_changes(m_db.handle()) > 0);
 }

@@ -51,9 +51,10 @@ int Application::run(int argc, char **argv)
                {QStringLiteral("data_root"), Paths::dataDir()}});
 
     m_app->setWindowIcon(QIcon(QStringLiteral(":/icons/app.svg")));
-    loadTranslations();
 
+    // Settings must be available before the first translated string is shown.
     m_settings = std::make_unique<Settings>();
+    loadTranslations();
     applyThemeFromSettings();
 
     m_singleInstance = std::make_unique<SingleInstance>();
@@ -111,25 +112,66 @@ void Application::applyThemeFromSettings()
 
 void Application::loadTranslations()
 {
+    // "ui.language" is the documented key; "ui/language" is accepted as the
+    // native QSettings spelling used by the other UI settings.
+    const QString configured =
+        m_settings
+            ? m_settings->get(QStringLiteral("ui.language"),
+                              m_settings->get(QStringLiteral("ui/language"),
+                                              QStringLiteral("ru")))
+            : QStringLiteral("ru");
+    const QString language =
+        configured.trimmed().startsWith(QLatin1String("en"), Qt::CaseInsensitive)
+            ? QStringLiteral("en")
+            : QStringLiteral("ru");
+
     m_translator = std::make_unique<QTranslator>();
-    const bool embeddedLoaded = m_translator->load(QStringLiteral(":/i18n/mini.qm"));
-    if (embeddedLoaded) {
+    const QString embedded = QStringLiteral(":/i18n/mini_%1.qm").arg(language);
+    if (m_translator->load(embedded)) {
         m_app->installTranslator(m_translator.get());
         Log::info(QStringLiteral("i18n.loaded"),
-                  {{QStringLiteral("source"), QStringLiteral("embedded")}});
+                  {{QStringLiteral("source"), QStringLiteral("embedded")},
+                   {QStringLiteral("language"), language}});
+        return;
+    }
+
+    // The Russian catalog is also embedded under the legacy "mini.qm" name
+    // for compatibility with older test targets.
+    if (language == QLatin1String("ru")
+        && m_translator->load(QStringLiteral(":/i18n/mini.qm"))) {
+        m_app->installTranslator(m_translator.get());
+        Log::info(QStringLiteral("i18n.loaded"),
+                  {{QStringLiteral("source"), QStringLiteral("embedded-legacy")},
+                   {QStringLiteral("language"), language}});
         return;
     }
 
     // Development fallback when the resource was not generated.
-    const QString path =
-        QDir(Paths::translationsDir()).filePath(QStringLiteral("mini.qm"));
+    const QString path = QDir(Paths::translationsDir())
+                             .filePath(QStringLiteral("mini_%1.qm").arg(language));
     if (QFile::exists(path) && m_translator->load(path)) {
         m_app->installTranslator(m_translator.get());
-        Log::info(QStringLiteral("i18n.loaded"), {{QStringLiteral("source"), path}});
+        Log::info(QStringLiteral("i18n.loaded"),
+                  {{QStringLiteral("source"), path},
+                   {QStringLiteral("language"), language}});
         return;
     }
+
+    if (language == QLatin1String("ru")) {
+        const QString legacy =
+            QDir(Paths::translationsDir()).filePath(QStringLiteral("mini.qm"));
+        if (QFile::exists(legacy) && m_translator->load(legacy)) {
+            m_app->installTranslator(m_translator.get());
+            Log::info(QStringLiteral("i18n.loaded"),
+                      {{QStringLiteral("source"), legacy},
+                       {QStringLiteral("language"), language}});
+            return;
+        }
+    }
+
     Log::warn(QStringLiteral("i18n.translation_missing"),
-              {{QStringLiteral("path"), path}});
+              {{QStringLiteral("language"), language},
+               {QStringLiteral("path"), path}});
 }
 
 void Application::setupTunnel()
@@ -232,9 +274,15 @@ void Application::openMainWindow()
         m_mainWindow->setGroupService(m_runtime->groupService());
         m_mainWindow->setChannelService(m_runtime->channelService());
         m_mainWindow->setMessageService(m_runtime->messageService());
+        m_mainWindow->setPollService(m_runtime->pollService());
+        m_mainWindow->setFolderService(m_runtime->folderService());
         m_mainWindow->setMediaService(m_runtime->mediaService());
         m_mainWindow->setStickerService(m_runtime->stickerService());
         m_mainWindow->setSearchService(m_runtime->searchService());
+        m_mainWindow->setBotService(m_runtime->botService());
+        m_mainWindow->setPrivacyService(m_runtime->privacyService());
+        m_mainWindow->setExportService(m_runtime->exportService());
+        m_mainWindow->setImportService(m_runtime->importService());
         m_mainWindow->setStorageWorker(m_runtime->storage());
         m_mainWindow->setWsClient(m_runtime->ws());
     }
@@ -254,9 +302,15 @@ void Application::signOut()
         m_mainWindow->setGroupService(nullptr);
         m_mainWindow->setChannelService(nullptr);
         m_mainWindow->setMessageService(nullptr);
+        m_mainWindow->setPollService(nullptr);
+        m_mainWindow->setFolderService(nullptr);
         m_mainWindow->setMediaService(nullptr);
         m_mainWindow->setStickerService(nullptr);
         m_mainWindow->setSearchService(nullptr);
+        m_mainWindow->setBotService(nullptr);
+        m_mainWindow->setPrivacyService(nullptr);
+        m_mainWindow->setExportService(nullptr);
+        m_mainWindow->setImportService(nullptr);
         m_mainWindow->setStorageWorker(nullptr);
         m_mainWindow->setWsClient(nullptr);
         m_mainWindow->hide();
@@ -308,6 +362,7 @@ void Application::startRuntime()
     runtime.selfLogin = session.login;
     runtime.selfUserId = session.userId;
     runtime.kenc = m_auth->authService()->fileKeys().kenc;
+    runtime.kmac = m_auth->authService()->fileKeys().kmac;
 
     const Result<bool> started = m_runtime->start(runtime);
     if (started.isError()) {
@@ -333,6 +388,8 @@ void Application::startRuntime()
                 m_mainWindow->setGroupService(nullptr);
         m_mainWindow->setChannelService(nullptr);
                 m_mainWindow->setMessageService(nullptr);
+        m_mainWindow->setPollService(nullptr);
+        m_mainWindow->setFolderService(nullptr);
                 m_mainWindow->setMediaService(nullptr);
                 m_mainWindow->setSearchService(nullptr);
                 m_mainWindow->setStorageWorker(nullptr);

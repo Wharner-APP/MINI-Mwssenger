@@ -7,7 +7,8 @@ set(MINI_TEST_TARGETS
     test_composer
     test_markdown
     test_singleinstance
-    test_mainwindow)
+    test_mainwindow
+    test_i18n_phase4)
 
 foreach(test_target IN LISTS MINI_TEST_TARGETS)
     add_executable(${test_target} ${test_target}.cpp)

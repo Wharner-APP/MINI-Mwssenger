@@ -1,5 +1,7 @@
 #pragma once
 
+#include "domain/Poll.h"
+
 #include <QByteArray>
 #include <QJsonObject>
 #include <QString>
@@ -124,6 +126,10 @@ struct RichBody
     QVector<MediaWire> items;  // photo/video/file: one item; album: 1..10
     StickerRef sticker;
     GifRef gif;
+    // §38.3: a poll travels as a JSON body inside the normal E2E envelope;
+    // `kind` stays Text so old clients still show the question.
+    bool hasPoll = false;
+    PollBody poll;
 
     [[nodiscard]] bool hasUploadedMedia() const { return !items.isEmpty(); }
 };

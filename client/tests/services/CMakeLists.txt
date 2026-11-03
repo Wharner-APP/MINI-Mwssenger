@@ -10,7 +10,15 @@ set(MINI_SERVICES_TEST_TARGETS
     test_channel_service
     test_media_service
     test_media_message
-    test_rich_media)
+    test_rich_media
+    test_reactions
+    test_polls
+    test_folders
+    test_bot_service
+    test_privacy_service
+    test_expiry
+    test_notifications_phase4
+    test_export_phase4)
 
 add_library(mini_services_test_support INTERFACE)
 target_include_directories(mini_services_test_support INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")

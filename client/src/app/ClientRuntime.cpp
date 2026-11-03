@@ -8,11 +8,19 @@
 #include "net/WsClient.h"
 #include "services/ApiChannelApi.h"
 #include "services/ApiGroupApi.h"
+#include "services/ApiBotApi.h"
+#include "services/ApiPrivacyApi.h"
+#include "services/BotService.h"
 #include "services/ChatService.h"
 #include "services/ContactService.h"
 #include "services/ChannelService.h"
+#include "services/ExportService.h"
+#include "services/FolderService.h"
+#include "services/ImportService.h"
 #include "services/GroupService.h"
 #include "services/MediaService.h"
+#include "services/PollService.h"
+#include "services/PrivacyService.h"
 #include "services/StickerService.h"
 #include "services/MediaTransport.h"
 #include "services/MessageService.h"
@@ -126,6 +134,13 @@ Result<bool> ClientRuntime::start(const Config &config)
     m_chat = new services::ChatService(m_storage, this);
     m_chat->setSelfLogin(config.selfLogin);
 
+    // §38.3 / §48: polls and folders are local-only; PollService uses the
+    // message pipeline for encrypted votes.
+    m_polls = new services::PollService(m_storage, this);
+    m_polls->setMessageService(m_messages);
+    m_polls->setSelfLogin(config.selfLogin);
+    m_folders = new services::FolderService(m_storage, this);
+
     m_contacts = new services::ContactService(m_storage, this);
     m_contacts->setLookup([this](const QString &login,
                                  std::function<void(Result<services::PeerProfile>)> done) {
@@ -191,6 +206,30 @@ Result<bool> ClientRuntime::start(const Config &config)
 
     m_search = new services::SearchService(m_storage, this);
 
+    // §49: backups are encrypted with K_export = HKDF(K_mac, "export/v1").
+    const QString mediaRoot = QDir(config.dataDir).filePath(QStringLiteral("media"));
+    m_export = new services::ExportService(m_storage, this);
+    m_export->setKMac(config.kmac);
+    m_export->setUserId(config.selfUserId);
+    m_export->setMediaRoot(mediaRoot);
+    m_import = new services::ImportService(m_storage, this);
+    m_import->setKMac(config.kmac);
+    m_import->setMediaRoot(mediaRoot);
+    m_import->setBackupLocation(backupsDir, keysPath);
+
+    // §44: owner-side bot management. Bots reuse the direct chat container;
+    // their messages are plaintext by design and never enter the E2E outbox.
+    m_botApi = new services::ApiBotApi(m_api);
+    m_bots = new services::BotService(this);
+    m_bots->setApi(m_botApi);
+    m_bots->setChatService(m_chat);
+    m_bots->setMessageService(m_messages);
+
+    // §11.12 #177-182: privacy rules, blacklist and the session list.
+    m_privacyApi = new services::ApiPrivacyApi(m_api);
+    m_privacy = new services::PrivacyService(this);
+    m_privacy->setApi(m_privacyApi);
+
     m_running = true;
     m_keysPublished = false;
     publishKeys();
@@ -245,10 +284,16 @@ void ClientRuntime::stop()
     m_media = nullptr;
     delete m_groupApi;
     m_groupApi = nullptr;
+    delete m_botApi;
+    m_botApi = nullptr;
+    delete m_privacyApi;
+    m_privacyApi = nullptr;
     for (QObject *child : {static_cast<QObject *>(m_api), static_cast<QObject *>(m_ws),
                            static_cast<QObject *>(m_messages), static_cast<QObject *>(m_chat),
                            static_cast<QObject *>(m_contacts), static_cast<QObject *>(m_groups),
-                           static_cast<QObject *>(m_search)}) {
+                           static_cast<QObject *>(m_search), static_cast<QObject *>(m_bots),
+                           static_cast<QObject *>(m_privacy), static_cast<QObject *>(m_export),
+                           static_cast<QObject *>(m_import)}) {
         delete child;
     }
     delete m_crypto;
@@ -261,6 +306,10 @@ void ClientRuntime::stop()
     m_contacts = nullptr;
     m_groups = nullptr;
     m_search = nullptr;
+    m_bots = nullptr;
+    m_privacy = nullptr;
+    m_export = nullptr;
+    m_import = nullptr;
     m_crypto = nullptr;
     m_storage = nullptr;
     m_running = false;}

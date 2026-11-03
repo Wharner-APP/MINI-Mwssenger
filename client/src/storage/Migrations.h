@@ -16,7 +16,7 @@ class Migrations
 public:
     Migrations() = delete;
 
-    static constexpr int latestVersion = 7;
+    static constexpr int latestVersion = 8;
 
     [[nodiscard]] static Result<int> currentVersion(Database &db);
     static Result<bool> apply(Database &db, const QString &backupsDir = QString());

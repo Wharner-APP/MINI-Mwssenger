@@ -79,6 +79,9 @@ ChatItem itemFor(const Chat &chat)
     item.pinned = chat.pinned;
     item.muted = chat.muted;
     item.archived = chat.archived;
+    item.isBot = chat.isBot
+        || (chat.kind == QLatin1String("direct")
+            && chat.peerLogin.toLower().endsWith(QLatin1String("_bot")));
     return item;
 }
 
@@ -348,6 +351,12 @@ void ChatList::setFilterMode(FilterMode mode)
 {
     m_filterMode = mode;
     filterButton(mode)->setChecked(true);
+    rebuildItems();
+}
+
+void ChatList::setActiveFolder(const ChatFolder &folder)
+{
+    m_folder = folder;
     rebuildItems();
 }
 
@@ -646,6 +655,10 @@ void ChatList::rebuildItems()
                 continue;
             }
         } else if (chat.archived) {
+            continue;
+        }
+        // §48: the active folder is a rule set, not an explicit list.
+        if (!m_folder.id.isEmpty() && !folderMatches(m_folder, chat)) {
             continue;
         }
         if (m_filterMode == FilterMode::Unread && chat.unreadCount <= 0) {

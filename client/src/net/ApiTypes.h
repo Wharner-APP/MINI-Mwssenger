@@ -322,6 +322,83 @@ struct ChannelViewInfo {
     int views = -1;
 };
 
+// ---- Bots (§30.5.4, §44) ------------------------------------------------
+
+struct BotInfo {
+    QString botId;
+    QString userId;
+    QString login;
+    QString displayName;
+    QString about;
+    QString avatarMedia;
+    QString tokenPrefix;
+    bool canJoinGroups = true;
+    bool canReadAllGroupMessages = false;
+    bool inlineEnabled = false;
+    bool isBot = true;
+    // §29.14: a bot must read the message to answer, so this chat is never E2E.
+    bool e2e = false;
+    qint64 createdAt = 0;
+    qint64 updatedAt = 0;
+};
+
+struct BotCreateRequest {
+    QString login;
+    QString displayName;
+    QString about;
+    bool canJoinGroups = true;
+    bool canReadAllGroupMessages = false;
+    bool inlineEnabled = false;
+};
+
+struct BotCreateResult {
+    BotInfo bot;
+    QString token;
+    bool tokenShownOnce = true;
+};
+
+struct BotTokenResult {
+    QString token;
+    QString tokenPrefix;
+    bool tokenShownOnce = true;
+};
+
+struct BotSendResult {
+    QString messageId;
+    QString updateId;
+};
+
+// ---- Privacy and sessions (§11.12 #177-182, §28.16) ---------------------
+
+struct PrivacySettings {
+    QString whoCanMessage = QStringLiteral("everyone");
+    QString whoCanCall = QStringLiteral("everyone");
+    QString whoSeesLastSeen = QStringLiteral("everyone");
+    bool readReceipts = true;
+};
+
+struct BlockedUserInfo {
+    QString userId;
+    QString login;
+    QString displayName;
+    qint64 createdAt = 0;
+};
+
+struct DeviceRecord {
+    QString deviceId;
+    QString name;
+    QString platform;
+    QString ip;
+    qint64 createdAt = 0;
+    qint64 lastSeenAt = 0;
+    bool current = false;
+};
+
+struct RevokeAllResult {
+    int revokedDevices = 0;
+    int revokedSessions = 0;
+};
+
 } // namespace mini::net
 
 Q_DECLARE_METATYPE(mini::net::Envelope)

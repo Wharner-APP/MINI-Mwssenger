@@ -122,6 +122,27 @@ public:
     void recordChannelView(const QString &channelId, const QString &postId,
                            Callback<ChannelViewInfo> callback);
 
+    // Bots (§30.5.4, §44). The token is returned only by create/rotate; the
+    // server stores a hash and a prefix, so the client never persists it.
+    void listBots(Callback<QList<BotInfo>> callback);
+    void createBot(const BotCreateRequest &request, Callback<BotCreateResult> callback);
+    void getBot(const QString &botId, Callback<BotInfo> callback);
+    void rotateBotToken(const QString &botId, Callback<BotTokenResult> callback);
+    void deleteBot(const QString &botId, Callback<Empty> callback);
+    void sendBotMessage(const QString &botId, const QString &text,
+                        Callback<BotSendResult> callback);
+
+    // Privacy, block list and devices (§11.12 #177-182, §28.16).
+    void getPrivacySettings(Callback<PrivacySettings> callback);
+    void updatePrivacySettings(const PrivacySettings &settings,
+                               Callback<PrivacySettings> callback);
+    void listBlocks(Callback<QList<BlockedUserInfo>> callback);
+    void blockUser(const QString &userOrLogin, Callback<Empty> callback);
+    void unblockUser(const QString &userId, Callback<Empty> callback);
+    void listDevices(Callback<QList<DeviceRecord>> callback);
+    void revokeDevice(const QString &deviceId, Callback<Empty> callback);
+    void revokeAllDevices(Callback<RevokeAllResult> callback);
+
     // Encrypted media staging (§29.11, §30.5.2). Chunks are raw ciphertext,
     // not JSON: never log or re-encode them.
     void mediaInit(qint64 totalSize, qint64 chunkSize,

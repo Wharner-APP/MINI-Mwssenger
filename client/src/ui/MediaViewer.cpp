@@ -11,10 +11,18 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QSlider>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+
+#ifdef MINI_HAVE_MULTIMEDIA
+#include <QAudioOutput>
+#include <QMediaPlayer>
+#include <QVideoWidget>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -196,16 +204,74 @@ MediaViewer::MediaViewer(QWidget *parent) : QDialog(parent)
     m_videoPanel->setObjectName(QStringLiteral("mediaViewerVideoPanel"));
     m_videoHint = new QLabel(m_videoPanel);
     m_videoHint->setAlignment(Qt::AlignCenter);
+    m_videoHint->setWordWrap(true);
     m_videoHint->setStyleSheet(QStringLiteral("color: #c8c8d4;"));
     m_openExternal = new QPushButton(tr("Open in an external player"), m_videoPanel);
     m_openExternal->setObjectName(QStringLiteral("mediaViewerOpenExternal"));
     auto *videoLayout = new QVBoxLayout(m_videoPanel);
-    videoLayout->setContentsMargins(24, 24, 24, 24);
-    videoLayout->setSpacing(16);
+    videoLayout->setContentsMargins(16, 16, 16, 12);
+    videoLayout->setSpacing(10);
+
+#ifdef MINI_HAVE_MULTIMEDIA
+    // §40.4: built-in player (play/pause, volume, full screen). The video
+    // surface fills the panel; the hint and the external-player button stay
+    // available for media that has not been downloaded yet.
+    m_player = new QMediaPlayer(this);
+    m_audio = new QAudioOutput(this);
+    m_audio->setVolume(0.7);
+    m_player->setAudioOutput(m_audio);
+    m_videoWidget = new QVideoWidget(m_videoPanel);
+    m_videoWidget->setObjectName(QStringLiteral("mediaViewerVideoSurface"));
+    m_videoWidget->setMinimumHeight(220);
+    m_player->setVideoOutput(m_videoWidget);
+    m_videoSurface = m_videoWidget;
+    videoLayout->addWidget(m_videoWidget, 1);
+
+    auto *controls = new QHBoxLayout();
+    controls->setContentsMargins(0, 0, 0, 0);
+    controls->setSpacing(10);
+    m_playPause = viewerButton(m_videoPanel, QStringLiteral("mediaViewerPlayPause"),
+                               QStringLiteral("play"), tr("Play"));
+    m_playPause->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+    m_playPause->setFixedSize(36, 36);
+    m_volume = new QSlider(Qt::Horizontal, m_videoPanel);
+    m_volume->setObjectName(QStringLiteral("mediaViewerVolume"));
+    m_volume->setRange(0, 100);
+    m_volume->setValue(70);
+    m_volume->setFixedWidth(120);
+    m_volume->setAccessibleName(tr("Volume"));
+    m_fullscreen = viewerButton(m_videoPanel, QStringLiteral("mediaViewerFullScreen"),
+                                QStringLiteral("monitor"), tr("Full screen"));
+    m_fullscreen->setIcon(style()->standardIcon(QStyle::SP_TitleBarMaxButton));
+    m_fullscreen->setFixedSize(36, 36);
+    controls->addWidget(m_playPause);
+    controls->addWidget(m_volume);
+    controls->addStretch(1);
+    controls->addWidget(m_fullscreen);
+    videoLayout->addLayout(controls);
+
+    connect(m_playPause, &QToolButton::clicked, this, &MediaViewer::togglePlayback);
+    connect(m_fullscreen, &QToolButton::clicked, this, &MediaViewer::toggleFullScreen);
+    connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
+        if (m_audio) {
+            m_audio->setVolume(qBound(0, value, 100) / 100.0);
+        }
+    });
+    connect(m_player, &QMediaPlayer::playbackStateChanged, this,
+            [this](QMediaPlayer::PlaybackState) { updatePlayButton(); });
+    connect(m_player, &QMediaPlayer::errorOccurred, this,
+            [this](QMediaPlayer::Error error, const QString &) {
+                if (error != QMediaPlayer::NoError) {
+                    m_videoHint->setText(tr("This video cannot be played here."));
+                    m_videoHint->setVisible(true);
+                }
+            });
+#else
+    m_videoSurface = nullptr;
     videoLayout->addStretch(1);
+#endif
     videoLayout->addWidget(m_videoHint, 0, Qt::AlignHCenter);
     videoLayout->addWidget(m_openExternal, 0, Qt::AlignHCenter);
-    videoLayout->addStretch(1);
     connect(m_openExternal, &QPushButton::clicked, this, [this] {
         if (m_index >= 0 && m_index < m_items.size()) {
             emit openExternalRequested(m_items.at(m_index).mediaId);
@@ -276,6 +342,16 @@ MediaViewer::MediaViewer(QWidget *parent) : QDialog(parent)
     updateChrome();
 }
 
+MediaViewer::~MediaViewer()
+{
+#ifdef MINI_HAVE_MULTIMEDIA
+    if (m_player) {
+        m_player->stop();
+        m_player->setSource(QUrl());
+    }
+#endif
+}
+
 void MediaViewer::setItems(const QVector<MediaViewerItem> &items, int index)
 {
     m_items = items;
@@ -325,6 +401,13 @@ void MediaViewer::updateChrome()
         m_counter->clear();
         m_canvas->setImage({});
         m_stack->setCurrentWidget(m_canvas);
+#ifdef MINI_HAVE_MULTIMEDIA
+        if (m_player) {
+            m_player->stop();
+            m_player->setSource(QUrl());
+        }
+        m_videoPath.clear();
+#endif
         return;
     }
 
@@ -339,7 +422,9 @@ void MediaViewer::updateChrome()
         m_videoHint->setText(tr("Video: %1\n%2")
                                  .arg(item.title.isEmpty() ? item.mediaId : item.title,
                                       item.subtitle));
+        m_videoHint->setVisible(item.path.isEmpty());
         m_openExternal->setEnabled(!item.path.isEmpty());
+        updateVideoSource();
     } else {
         m_stack->setCurrentWidget(m_canvas);
         QPixmap image = item.image;
@@ -347,7 +432,95 @@ void MediaViewer::updateChrome()
             image.load(item.path);
         }
         m_canvas->setImage(image);
+#ifdef MINI_HAVE_MULTIMEDIA
+        // Leaving a video must stop its audio immediately.
+        if (m_player) {
+            m_player->stop();
+            m_player->setSource(QUrl());
+        }
+        m_videoPath.clear();
+#endif
     }
+}
+
+bool MediaViewer::playerAvailable() const
+{
+#ifdef MINI_HAVE_MULTIMEDIA
+    return m_player != nullptr;
+#else
+    return false;
+#endif
+}
+
+void MediaViewer::updateVideoSource()
+{
+#ifdef MINI_HAVE_MULTIMEDIA
+    if (!m_player) {
+        return;
+    }
+    const bool hasItems = m_index >= 0 && m_index < m_items.size();
+    if (!hasItems) {
+        m_player->stop();
+        m_player->setSource(QUrl());
+        m_videoPath.clear();
+        updatePlayButton();
+        return;
+    }
+    const MediaViewerItem &item = m_items.at(m_index);
+    if (item.kind != MediaKind::Video || item.path.isEmpty()) {
+        m_player->stop();
+        m_player->setSource(QUrl());
+        m_videoPath.clear();
+        updatePlayButton();
+        return;
+    }
+    if (item.path == m_videoPath && m_player->source().isValid()) {
+        return; // already loaded; keep the current playback state
+    }
+    m_videoPath = item.path;
+    m_player->setSource(QUrl::fromLocalFile(item.path));
+    m_player->play();
+    updatePlayButton();
+#endif
+}
+
+void MediaViewer::togglePlayback()
+{
+#ifdef MINI_HAVE_MULTIMEDIA
+    if (!m_player) {
+        return;
+    }
+    if (m_player->playbackState() == QMediaPlayer::PlayingState) {
+        m_player->pause();
+    } else {
+        m_player->play();
+    }
+    updatePlayButton();
+#endif
+}
+
+void MediaViewer::toggleFullScreen()
+{
+    if (isFullScreen()) {
+        showNormal();
+    } else {
+        showFullScreen();
+    }
+}
+
+void MediaViewer::updatePlayButton()
+{
+#ifdef MINI_HAVE_MULTIMEDIA
+    if (!m_playPause || !m_player) {
+        return;
+    }
+    const bool playing = m_player->playbackState() == QMediaPlayer::PlayingState;
+    m_playPause->setIcon(
+        style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+    const QString tip = playing ? tr("Pause") : tr("Play");
+    m_playPause->setToolTip(tip);
+    m_playPause->setAccessibleName(tip);
+#endif
 }
 
 void MediaViewer::keyPressEvent(QKeyEvent *event)
@@ -380,6 +553,13 @@ void MediaViewer::keyPressEvent(QKeyEvent *event)
 
 void MediaViewer::closeEvent(QCloseEvent *event)
 {
+#ifdef MINI_HAVE_MULTIMEDIA
+    if (m_player) {
+        m_player->stop();
+        m_player->setSource(QUrl());
+    }
+    m_videoPath.clear();
+#endif
     emit closed();
     QDialog::closeEvent(event);
 }

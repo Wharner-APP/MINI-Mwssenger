@@ -8,7 +8,9 @@ set(MINI_UI_TEST_TARGETS
     test_group_ui
     test_channel_ui
     test_media_viewer
-    test_picker_ui)
+    test_picker_ui
+    test_bot_ui
+    test_privacy_ui)
 
 foreach(test_target IN LISTS MINI_UI_TEST_TARGETS)
     add_executable(${test_target} ${test_target}.cpp)

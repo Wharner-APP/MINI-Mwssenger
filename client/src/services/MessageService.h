@@ -3,6 +3,8 @@
 #include "core/Result.h"
 #include "domain/Message.h"
 #include "domain/OutboxItem.h"
+#include "domain/Poll.h"
+#include "domain/Reaction.h"
 #include "net/ApiError.h"
 #include "net/ApiTypes.h"
 #include "services/GroupCrypto.h"
@@ -137,6 +139,7 @@ public:
     // Stamped into every envelope header so the server can route the envelope
     // and the recipient can label the chat.
     void setSelfLogin(const QString &login) { m_selfLogin = login; }
+    [[nodiscard]] QString selfLogin() const { return m_selfLogin; }
 
     // Test/UI seam: the window during which a queued message can be cancelled.
     void setCancelWindowMs(int milliseconds);
@@ -147,6 +150,11 @@ public:
     QString sendText(const QString &chatId, const QString &text,
                      const QString &replyToClientMsgId = QString(),
                      const QString &clientMsgId = QString());
+    // §29.14: bot messages are stored by the server in plaintext, so they do
+    // not enter the E2E outbox. This records the local sent row after the bot
+    // API accepted the text and emits messageAdded.
+    QString recordPlainText(const QString &chatId, const QString &text,
+                            const QString &serverMsgId = QString());
     // Same pipeline for an already uploaded file (§18.4 step 7). `caption`
     // becomes the message body; the media descriptor travels inside the E2E
     // envelope, never in the clear.
@@ -168,6 +176,10 @@ public:
                       const QString &caption,
                       const QString &replyToClientMsgId = QString(),
                       const QString &clientMsgId = QString());
+    // §38.3: the poll definition rides inside the encrypted text body; the
+    // question doubles as the chat-list preview.
+    QString sendPoll(const QString &chatId, const PollBody &poll,
+                     const QString &clientMsgId = QString());
 
     // Encrypted control envelope to one peer (sender key distribution). It is
     // never stored in the message history or the outbox.
@@ -195,6 +207,26 @@ public:
     void searchInChat(const QString &chatId, const QString &query,
                       Done<QVector<Message>> done);
 
+    // §38.1: one reaction per user; the same emoji toggles it off, another
+    // replaces it. Mirrored to the peers as a `reaction` control event.
+    void toggleReaction(const QString &clientMsgId, const QString &emoji,
+                        Done<bool> done);
+    void reactionsForChat(const QString &chatId, Done<QVector<Reaction>> done);
+
+    // §38.3: encrypted control event used by PollService for votes and the
+    // close action. Fire-and-forget; delivery failures are reported by the
+    // transport and retried on the next queued message.
+    void sendControlEvent(const QString &chatId, const QString &kind,
+                          const QJsonObject &payload, Done<bool> done = {});
+
+    // §39.2: sets the per-chat timer, posts the service line and tells the
+    // other participants. 0 turns it off.
+    void setChatExpiry(const QString &chatId, qint64 afterMs, Done<bool> done);
+    // §39.3: deletes every expired row, removes cached media and broadcasts
+    // `expire`. Runs on a 30 s timer, and is public so tests can force it.
+    void runExpiryCleanup();
+    void setExpiryIntervalMs(int milliseconds);
+
     static constexpr qint64 kActionWindowMs = 48LL * 60 * 60 * 1000;
     void loadHistory(const QString &chatId, const MessageCursor &before, int limit,
                      Done<QVector<Message>> done);
@@ -209,6 +241,14 @@ signals:
     void messageUpdated(const mini::Message &message);
     void messageRemoved(const QString &clientMsgId, const QString &chatId);
     void pinsChanged(const QString &chatId);
+    // §38.1: one message's chips changed.
+    void reactionsChanged(const QString &chatId, const QString &clientMsgId);
+    // §38.3: a vote or a close arrived (or was applied locally).
+    void pollsChanged(const QString &chatId, const QString &pollId);
+    // §39: the chat timer changed (local or remote).
+    void chatTimerChanged(const QString &chatId, qint64 afterMs);
+    // §39.3: media row ids whose cache files should be dropped.
+    void mediaExpired(const QStringList &mediaIds);
     // A failed send returns its text so the composer can restore it.
     void messageSendFailed(const QString &clientMsgId, const QString &chatId,
                            const QString &text, const QString &code);
@@ -226,6 +266,9 @@ private:
     void markFailed(const OutboxItem &item, const QString &code);
     void handleSendFailure(const OutboxItem &item, const net::ApiError &error);
     void handleIncoming(const net::Envelope &envelope);
+    // §29.14: bot replies are plaintext (`kind == "bot"`, `header.bot`) and
+    // the server addresses them by account id, not by the direct chat id.
+    void handleBotIncoming(const net::Envelope &envelope, const QString &sender);
     void handleGroupIncoming(const net::Envelope &envelope, const QString &senderLogin,
                              bool keyPrepared);
     void handleAcknowledged(const QString &clientMsgId, const QString &chatId);
@@ -235,6 +278,11 @@ private:
                        const QJsonObject &payload);
     void applyIncomingEvent(const QString &kind, const QString &chatId,
                             const QByteArray &plain, const QString &sender);
+    void applyReactionEvent(const QString &chatId, const QJsonObject &payload,
+                            const QString &sender);
+    void applyExpireEvent(const QString &chatId, const QJsonObject &payload);
+    void applyChatTimerEvent(const QString &chatId, const QJsonObject &payload);
+    void notifyPollChange(const QString &pollId);
 
     storage::StorageWorker *m_storage = nullptr;
     CryptoSession *m_crypto = nullptr;
@@ -243,6 +291,7 @@ private:
     MessageTransport *m_transport = nullptr;
     QVector<QMetaObject::Connection> m_transportConnections;
     QTimer m_pumpTimer;
+    QTimer m_expiryTimer;
     QHash<QString, qint64> m_holdUntil;
     QSet<QString> m_sendingChats;
     int m_cancelWindowMs = 5000;

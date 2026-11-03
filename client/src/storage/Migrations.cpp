@@ -227,6 +227,64 @@ CREATE TABLE IF NOT EXISTS chat_pins (
 );
 CREATE INDEX IF NOT EXISTS ix_chat_pins_order ON chat_pins(chat_id, pinned_at DESC);
 )sql"},
+    // Phase 4: reactions (§38.1), polls (§38.3), folders (§48) and
+    // disappearing messages (§39). The new message/chat columns are added by
+    // ensurePhase4Columns so a rewound database re-runs the ALTERs safely.
+    {8, R"sql(
+CREATE TABLE IF NOT EXISTS reactions (
+    client_msg_id TEXT NOT NULL REFERENCES messages(client_msg_id) ON DELETE CASCADE,
+    chat_id       TEXT NOT NULL DEFAULT '',
+    sender_login  TEXT NOT NULL,
+    emoji         TEXT NOT NULL,
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(client_msg_id, sender_login)
+);
+CREATE INDEX IF NOT EXISTS ix_reactions_chat ON reactions(chat_id, client_msg_id);
+
+CREATE TABLE IF NOT EXISTS polls (
+    poll_id              TEXT PRIMARY KEY,
+    chat_id              TEXT NOT NULL DEFAULT '',
+    message_client_msg_id TEXT NOT NULL DEFAULT '',
+    question             TEXT NOT NULL DEFAULT '',
+    options_json         TEXT NOT NULL DEFAULT '[]',
+    anonymous            INTEGER NOT NULL DEFAULT 1,
+    multiple             INTEGER NOT NULL DEFAULT 0,
+    quiz                 INTEGER NOT NULL DEFAULT 0,
+    allow_change         INTEGER NOT NULL DEFAULT 0,
+    correct_option       INTEGER NOT NULL DEFAULT -1,
+    closed               INTEGER NOT NULL DEFAULT 0,
+    created_by           TEXT NOT NULL DEFAULT '',
+    created_at           INTEGER NOT NULL DEFAULT 0,
+    closed_at            INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_polls_chat ON polls(chat_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+    poll_id      TEXT NOT NULL REFERENCES polls(poll_id) ON DELETE CASCADE,
+    voter_login  TEXT NOT NULL,
+    option_index INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(poll_id, voter_login, option_index)
+);
+CREATE INDEX IF NOT EXISTS ix_poll_votes_poll ON poll_votes(poll_id);
+
+CREATE TABLE IF NOT EXISTS chat_folders (
+    folder_id      TEXT PRIMARY KEY,
+    title          TEXT NOT NULL DEFAULT '',
+    icon           TEXT NOT NULL DEFAULT 'folder',
+    include_types  TEXT NOT NULL DEFAULT '',
+    include_chats  TEXT NOT NULL DEFAULT '',
+    exclude_types  TEXT NOT NULL DEFAULT '',
+    exclude_chats  TEXT NOT NULL DEFAULT '',
+    name_contains  TEXT NOT NULL DEFAULT '',
+    only_unread    INTEGER NOT NULL DEFAULT 0,
+    only_muted     INTEGER NOT NULL DEFAULT 0,
+    position       INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_chat_folders_order ON chat_folders(position, folder_id);
+)sql"},
 };
 
 // SQLite has no ADD COLUMN IF NOT EXISTS, and a database may already have the
@@ -292,6 +350,54 @@ Result<bool> ensureActionColumns(Database &db)
         {"chats", "muted_until",
          "ALTER TABLE chats ADD COLUMN muted_until INTEGER NOT NULL DEFAULT 0"},
         {"chats", "archived", "ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"},
+    };
+    for (const Column &column : columns) {
+        detail::Statement info(db.handle(),
+                               QStringLiteral("PRAGMA table_info(%1)")
+                                   .arg(QString::fromLatin1(column.table))
+                                   .toUtf8()
+                                   .constData());
+        if (!info.isOk()) {
+            continue;
+        }
+        bool exists = false;
+        int rc = info.step();
+        while (rc == SQLITE_ROW) {
+            if (info.text(1) == QLatin1String(column.name)) {
+                exists = true;
+                break;
+            }
+            rc = info.step();
+        }
+        if (exists) {
+            continue;
+        }
+        if (auto added = db.exec(QByteArray(column.sql)); added.isError()) {
+            return added;
+        }
+    }
+    return Result<bool>::ok(true);
+}
+
+// Phase 4 columns: the chat timer (§39) and the message expiry/poll/system
+// markers. Same PRAGMA-first approach as above so re-running is harmless.
+Result<bool> ensurePhase4Columns(Database &db)
+{
+    struct Column
+    {
+        const char *table;
+        const char *name;
+        const char *sql;
+    };
+    static const Column columns[] = {
+        {"chats", "expires_after_ms",
+         "ALTER TABLE chats ADD COLUMN expires_after_ms INTEGER NOT NULL DEFAULT 0"},
+        {"messages", "expires_at",
+         "ALTER TABLE messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0"},
+        {"messages", "poll_id",
+         "ALTER TABLE messages ADD COLUMN poll_id TEXT NOT NULL DEFAULT ''"},
+        {"messages", "system",
+         "ALTER TABLE messages ADD COLUMN system INTEGER NOT NULL DEFAULT 0"},
     };
     for (const Column &column : columns) {
         detail::Statement info(db.handle(),
@@ -453,6 +559,11 @@ Result<bool> Migrations::apply(Database &db, const QString &backupsDir)
             }
             if (targetVersion >= 7) {
                 if (auto columns = ensureActionColumns(tx); columns.isError()) {
+                    return columns;
+                }
+            }
+            if (targetVersion >= 8) {
+                if (auto columns = ensurePhase4Columns(tx); columns.isError()) {
                     return columns;
                 }
             }

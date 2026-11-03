@@ -122,6 +122,7 @@ void ChatItemDelegate::paint(QPainter *painter,
     const int unread = index.data(ChatListModel::UnreadRole).toInt();
     const bool muted = index.data(ChatListModel::MutedRole).toBool();
     const bool pinned = index.data(ChatListModel::PinnedRole).toBool();
+    const bool isBot = index.data(ChatListModel::BotRole).toBool();
     const QString time = index.data(ChatListModel::TimeRole).toString();
     const QString preview = index.data(ChatListModel::PreviewRole).toString();
 
@@ -163,11 +164,28 @@ void ChatItemDelegate::paint(QPainter *painter,
     painter->setPen(t.textPrimary);
     painter->setFont(fontFor(compact ? 13 : 14, QFont::DemiBold));
     const QFontMetrics titleMetrics(painter->font());
+    // §29.14: reserve room for the "BOT" badge so the name never runs into it.
+    const int botBadgeWidth = isBot ? 30 : 0;
+    const QString elidedTitle =
+        titleMetrics.elidedText(title, Qt::ElideRight,
+                                qMax(20, textWidth - titleOffset - botBadgeWidth));
     painter->drawText(QRect(textLeft + titleOffset, titleTop, textWidth - titleOffset,
                             titleHeight),
-                      Qt::AlignLeft | Qt::AlignVCenter,
-                      titleMetrics.elidedText(title, Qt::ElideRight,
-                                              textWidth - titleOffset));
+                      Qt::AlignLeft | Qt::AlignVCenter, elidedTitle);
+
+    if (isBot) {
+        const int drawn = qMin(titleMetrics.horizontalAdvance(elidedTitle),
+                               textWidth - titleOffset);
+        const QRect badge(textLeft + titleOffset + drawn + 5, titleTop + 3, 27, 14);
+        QColor tint = t.accent;
+        tint.setAlpha(48);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(tint);
+        painter->drawRoundedRect(badge, 7, 7);
+        painter->setPen(t.accent);
+        painter->setFont(fontFor(8, QFont::DemiBold));
+        painter->drawText(badge, Qt::AlignCenter, tr("BOT"));
+    }
 
     if (!compact) {
         painter->setPen(t.textSecondary);

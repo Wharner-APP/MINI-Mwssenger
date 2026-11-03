@@ -3,21 +3,35 @@
 #include "core/BuildInfo.h"
 #include "core/Settings.h"
 #include "services/DiagnosticsService.h"
+#include "services/ExportService.h"
+#include "services/ImportService.h"
+#include "services/NotificationService.h"
+#include "services/PrivacyService.h"
 #include "storage/StorageWorker.h"
 #include "ui/AboutDialog.h"
+#include "ui/BlockListDialog.h"
+#include "ui/DevicesDialog.h"
 #include "ui/Theme.h"
 #include "ui/widgets/ColorSwatch.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPointer>
+#include <QProgressBar>
 #include <QPushButton>
+#include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QTabWidget>
+#include <QTimeEdit>
 #include <QVBoxLayout>
 
 namespace mini {
@@ -48,6 +62,14 @@ SettingsDialog::SettingsDialog(Settings *settings, QWidget *parent)
     auto *behaviour = new QWidget(tabs);
     buildBehaviourTab(behaviour);
     tabs->addTab(behaviour, tr("Behaviour"));
+
+    auto *notifications = new QWidget(tabs);
+    buildNotificationsTab(notifications);
+    tabs->addTab(notifications, tr("Notifications"));
+
+    auto *privacy = new QWidget(tabs);
+    buildPrivacyTab(privacy);
+    tabs->addTab(privacy, tr("Privacy"));
 
     auto *about = new QWidget(tabs);
     buildAboutTab(about);
@@ -154,7 +176,36 @@ void SettingsDialog::buildBehaviourTab(QWidget *page)
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
-    layout->addSpacing(12);
+    layout->addSpacing(8);
+
+    // §12.5: one of the two shipped catalogs; applied on the next launch.
+    auto *languageRow = new QHBoxLayout();
+    languageRow->setContentsMargins(0, 0, 0, 0);
+    languageRow->setSpacing(8);
+    auto *languageLabel = new QLabel(tr("Language"), this);
+    m_language = new QComboBox(this);
+    m_language->setObjectName(QStringLiteral("languageCombo"));
+    m_language->addItem(tr("Russian"), QStringLiteral("ru"));
+    m_language->addItem(tr("English"), QStringLiteral("en"));
+    const QString language =
+        m_settings ? m_settings->get(QStringLiteral("ui/language"), QStringLiteral("ru"))
+                   : QStringLiteral("ru");
+    m_language->setCurrentIndex(
+        qMax(0, m_language->findData(language.trimmed().startsWith(QLatin1String("en"),
+                                                                   Qt::CaseInsensitive)
+                                         ? QStringLiteral("en")
+                                         : QStringLiteral("ru"))));
+    languageRow->addWidget(languageLabel);
+    languageRow->addWidget(m_language, 1);
+    layout->addLayout(languageRow);
+
+    auto *languageHint =
+        new QLabel(tr("Interface language changes after a restart."), this);
+    languageHint->setProperty("miniRole", QStringLiteral("caption"));
+    languageHint->setWordWrap(true);
+    layout->addWidget(languageHint);
+
+    layout->addSpacing(8);
 
     auto *dataTitle = new QLabel(tr("Data"), this);
     dataTitle->setProperty("miniRole", QStringLiteral("subtitle"));
@@ -175,6 +226,53 @@ void SettingsDialog::buildBehaviourTab(QWidget *page)
     dataRow->addWidget(m_backupStatus, 1);
     layout->addLayout(dataRow);
 
+    // §49.1 / §49.2: encrypted archive export and merge import.
+    m_exportButton = new QPushButton(tr("Export"), this);
+    m_exportButton->setObjectName(QStringLiteral("exportBackupButton"));
+    m_exportButton->setCursor(Qt::PointingHandCursor);
+    m_exportButton->setFocusPolicy(Qt::StrongFocus);
+    m_exportButton->setEnabled(false);
+    m_importButton = new QPushButton(tr("Import"), this);
+    m_importButton->setObjectName(QStringLiteral("importBackupButton"));
+    m_importButton->setCursor(Qt::PointingHandCursor);
+    m_importButton->setFocusPolicy(Qt::StrongFocus);
+    m_importButton->setEnabled(false);
+    m_exportMedia = new QCheckBox(tr("Include media"), this);
+    m_exportMedia->setObjectName(QStringLiteral("exportMediaCheckBox"));
+    m_exportMedia->setChecked(false);
+
+    auto *transferRow = new QHBoxLayout();
+    transferRow->setContentsMargins(0, 0, 0, 0);
+    transferRow->setSpacing(8);
+    transferRow->addWidget(m_exportButton);
+    transferRow->addWidget(m_importButton);
+    transferRow->addWidget(m_exportMedia);
+    transferRow->addStretch(1);
+    layout->addLayout(transferRow);
+
+    m_transferProgress = new QProgressBar(this);
+    m_transferProgress->setObjectName(QStringLiteral("transferProgress"));
+    m_transferProgress->setRange(0, 100);
+    m_transferProgress->setValue(0);
+    m_transferProgress->setVisible(false);
+    m_transferCancel = new QPushButton(tr("Cancel"), this);
+    m_transferCancel->setObjectName(QStringLiteral("transferCancelButton"));
+    m_transferCancel->setCursor(Qt::PointingHandCursor);
+    m_transferCancel->setVisible(false);
+
+    auto *progressRow = new QHBoxLayout();
+    progressRow->setContentsMargins(0, 0, 0, 0);
+    progressRow->setSpacing(8);
+    progressRow->addWidget(m_transferProgress, 1);
+    progressRow->addWidget(m_transferCancel, 0);
+    layout->addLayout(progressRow);
+
+    m_transferStatus = new QLabel(this);
+    m_transferStatus->setObjectName(QStringLiteral("transferStatusLabel"));
+    m_transferStatus->setProperty("miniRole", QStringLiteral("caption"));
+    m_transferStatus->setWordWrap(true);
+    layout->addWidget(m_transferStatus);
+
     m_diagnostics = new QPushButton(tr("Diagnostics"), this);
     m_diagnostics->setObjectName(QStringLiteral("diagnosticsButton"));
     m_diagnostics->setCursor(Qt::PointingHandCursor);
@@ -191,8 +289,189 @@ void SettingsDialog::buildBehaviourTab(QWidget *page)
         }
         emit settingsChanged();
     });
+    connect(m_language, &QComboBox::currentIndexChanged, this, [this] {
+        if (m_settings) {
+            const QString language = m_language->currentData().toString();
+            m_settings->set(QStringLiteral("ui/language"), language);
+            m_settings->set(QStringLiteral("ui.language"), language);
+            m_settings->flush();
+        }
+    });
     connect(m_backup, &QPushButton::clicked, this, &SettingsDialog::runBackup);
+    connect(m_exportButton, &QPushButton::clicked, this, &SettingsDialog::startExport);
+    connect(m_importButton, &QPushButton::clicked, this, &SettingsDialog::startImport);
+    connect(m_transferCancel, &QPushButton::clicked, this, [this] {
+        if (m_exportService && m_transferBusy) {
+            m_exportService->cancel();
+        }
+        if (m_importService && m_transferBusy) {
+            m_importService->cancel();
+        }
+    });
     connect(m_diagnostics, &QPushButton::clicked, this, &SettingsDialog::diagnosticsRequested);
+}
+
+void SettingsDialog::buildNotificationsTab(QWidget *page)
+{
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(10);
+
+    m_notificationsEnabled = new QCheckBox(tr("Enable notifications"), this);
+    m_notificationsEnabled->setObjectName(QStringLiteral("notificationsEnabledCheckBox"));
+    m_notificationSound = new QCheckBox(tr("Play a sound"), this);
+    m_notificationSound->setObjectName(QStringLiteral("notificationSoundCheckBox"));
+    m_notificationPreview = new QCheckBox(tr("Show message preview"), this);
+    m_notificationPreview->setObjectName(QStringLiteral("notificationPreviewCheckBox"));
+    layout->addWidget(m_notificationsEnabled);
+    layout->addWidget(m_notificationSound);
+    layout->addWidget(m_notificationPreview);
+
+    layout->addSpacing(8);
+
+    auto *dndTitle = new QLabel(tr("Do not disturb"), this);
+    dndTitle->setProperty("miniRole", QStringLiteral("subtitle"));
+    layout->addWidget(dndTitle);
+
+    m_dndSchedule = new QCheckBox(tr("Quiet hours"), this);
+    m_dndSchedule->setObjectName(QStringLiteral("dndScheduleCheckBox"));
+    layout->addWidget(m_dndSchedule);
+
+    auto *timeRow = new QHBoxLayout();
+    timeRow->setContentsMargins(0, 0, 0, 0);
+    timeRow->setSpacing(8);
+    m_dndStart = new QTimeEdit(this);
+    m_dndStart->setObjectName(QStringLiteral("dndStartEdit"));
+    m_dndStart->setDisplayFormat(QStringLiteral("HH:mm"));
+    m_dndEnd = new QTimeEdit(this);
+    m_dndEnd->setObjectName(QStringLiteral("dndEndEdit"));
+    m_dndEnd->setDisplayFormat(QStringLiteral("HH:mm"));
+    timeRow->addWidget(new QLabel(tr("From"), this));
+    timeRow->addWidget(m_dndStart);
+    timeRow->addWidget(new QLabel(tr("To"), this));
+    timeRow->addWidget(m_dndEnd);
+    timeRow->addStretch(1);
+    layout->addLayout(timeRow);
+
+    m_notificationStatus = new QLabel(tr("Notification settings are unavailable."), this);
+    m_notificationStatus->setObjectName(QStringLiteral("notificationStatusLabel"));
+    m_notificationStatus->setProperty("miniRole", QStringLiteral("caption"));
+    m_notificationStatus->setWordWrap(true);
+    layout->addWidget(m_notificationStatus);
+    layout->addStretch(1);
+
+    const auto apply = [this] {
+        if (!m_notificationService || m_notificationLoading) {
+            return;
+        }
+        m_notificationService->setNotificationsEnabled(m_notificationsEnabled->isChecked());
+        m_notificationService->setSoundEnabled(m_notificationSound->isChecked());
+        m_notificationService->setPreviewEnabled(m_notificationPreview->isChecked());
+        m_notificationService->setDndScheduleEnabled(m_dndSchedule->isChecked());
+        m_notificationService->setDndStart(m_dndStart->time());
+        m_notificationService->setDndEnd(m_dndEnd->time());
+        m_notificationStatus->setText(tr("Saved."));
+        emit settingsChanged();
+    };
+    connect(m_notificationsEnabled, &QCheckBox::toggled, this, apply);
+    connect(m_notificationSound, &QCheckBox::toggled, this, apply);
+    connect(m_notificationPreview, &QCheckBox::toggled, this, apply);
+    connect(m_dndSchedule, &QCheckBox::toggled, this, apply);
+    connect(m_dndStart, &QTimeEdit::timeChanged, this, apply);
+    connect(m_dndEnd, &QTimeEdit::timeChanged, this, apply);
+
+    for (QWidget *control : {static_cast<QWidget *>(m_notificationsEnabled),
+                             static_cast<QWidget *>(m_notificationSound),
+                             static_cast<QWidget *>(m_notificationPreview),
+                             static_cast<QWidget *>(m_dndSchedule),
+                             static_cast<QWidget *>(m_dndStart),
+                             static_cast<QWidget *>(m_dndEnd)}) {
+        control->setEnabled(false);
+    }
+}
+
+void SettingsDialog::buildPrivacyTab(QWidget *page)
+{
+    auto *form = new QFormLayout();
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setSpacing(10);
+
+    const auto fillRules = [](QComboBox *combo) {
+        combo->addItem(tr("Everyone"), services::PrivacyService::ruleId(
+                                           services::PrivacyRule::Everyone));
+        combo->addItem(tr("Contacts"), services::PrivacyService::ruleId(
+                                           services::PrivacyRule::Contacts));
+        combo->addItem(tr("Nobody"), services::PrivacyService::ruleId(
+                                         services::PrivacyRule::Nobody));
+    };
+
+    m_privacyMessage = new QComboBox(this);
+    m_privacyMessage->setObjectName(QStringLiteral("privacyMessageCombo"));
+    fillRules(m_privacyMessage);
+    form->addRow(tr("Who can write to me"), m_privacyMessage);
+
+    m_privacyCall = new QComboBox(this);
+    m_privacyCall->setObjectName(QStringLiteral("privacyCallCombo"));
+    fillRules(m_privacyCall);
+    form->addRow(tr("Who can call me"), m_privacyCall);
+
+    m_privacyLastSeen = new QComboBox(this);
+    m_privacyLastSeen->setObjectName(QStringLiteral("privacyLastSeenCombo"));
+    fillRules(m_privacyLastSeen);
+    form->addRow(tr("Who sees my activity"), m_privacyLastSeen);
+
+    m_privacyReceipts = new QCheckBox(tr("Send read receipts"), this);
+    m_privacyReceipts->setObjectName(QStringLiteral("privacyReceiptsCheck"));
+    m_privacyReceipts->setChecked(true);
+    form->addRow(QString(), m_privacyReceipts);
+
+    auto *hint = new QLabel(
+        tr("\"Contacts\" means people who share a group with you. Blocked users "
+           "cannot write or call you regardless of these rules."),
+        this);
+    hint->setProperty("miniRole", QStringLiteral("caption"));
+    hint->setWordWrap(true);
+
+    m_blockedUsers = new QPushButton(tr("Blocked users"), this);
+    m_blockedUsers->setObjectName(QStringLiteral("blockedUsersButton"));
+    m_blockedUsers->setCursor(Qt::PointingHandCursor);
+    m_blockedUsers->setEnabled(false);
+
+    m_devices = new QPushButton(tr("Sessions and devices"), this);
+    m_devices->setObjectName(QStringLiteral("devicesButton"));
+    m_devices->setCursor(Qt::PointingHandCursor);
+    m_devices->setEnabled(false);
+
+    auto *actions = new QHBoxLayout();
+    actions->setContentsMargins(0, 0, 0, 0);
+    actions->setSpacing(8);
+    actions->addWidget(m_blockedUsers);
+    actions->addWidget(m_devices);
+    actions->addStretch(1);
+
+    m_privacyStatus = new QLabel(tr("Privacy settings are unavailable."), this);
+    m_privacyStatus->setObjectName(QStringLiteral("privacyStatusLabel"));
+    m_privacyStatus->setProperty("miniRole", QStringLiteral("caption"));
+    m_privacyStatus->setWordWrap(true);
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(12);
+    layout->addLayout(form);
+    layout->addWidget(hint);
+    layout->addWidget(m_privacyStatus);
+    layout->addSpacing(6);
+    layout->addLayout(actions);
+    layout->addStretch(1);
+
+    for (QComboBox *combo : {m_privacyMessage, m_privacyCall, m_privacyLastSeen}) {
+        connect(combo, &QComboBox::currentIndexChanged, this,
+                [this] { applyPrivacy(); });
+    }
+    connect(m_privacyReceipts, &QCheckBox::toggled, this, [this] { applyPrivacy(); });
+    connect(m_blockedUsers, &QPushButton::clicked, this,
+            &SettingsDialog::openBlockedUsers);
+    connect(m_devices, &QPushButton::clicked, this, &SettingsDialog::openDevices);
 }
 
 void SettingsDialog::buildAboutTab(QWidget *page)
@@ -258,6 +537,94 @@ ColorSwatch *SettingsDialog::accentSwatch(int index) const
     return m_swatches.at(index);
 }
 
+void SettingsDialog::setPrivacyService(services::PrivacyService *service)
+{
+    m_privacyService = service;
+    const bool ready = service != nullptr;
+    m_privacyMessage->setEnabled(ready);
+    m_privacyCall->setEnabled(ready);
+    m_privacyLastSeen->setEnabled(ready);
+    m_privacyReceipts->setEnabled(ready);
+    m_blockedUsers->setEnabled(ready);
+    m_devices->setEnabled(ready);
+    if (!ready) {
+        m_privacyStatus->setText(tr("Privacy settings are unavailable."));
+        return;
+    }
+    loadPrivacy();
+}
+
+void SettingsDialog::loadPrivacy()
+{
+    if (!m_privacyService) {
+        return;
+    }
+    m_privacyStatus->setText(tr("Loading privacy settings…"));
+    QPointer<SettingsDialog> self(this);
+    m_privacyService->loadSettings([this, self](Result<services::PrivacySettings> result) {
+        if (!self) {
+            return;
+        }
+        if (result.isError()) {
+            m_privacyStatus->setText(
+                tr("Could not load privacy settings: %1").arg(result.error()));
+            return;
+        }
+        const services::PrivacySettings settings = result.value();
+        m_privacyLoading = true;
+        m_privacyMessage->setCurrentIndex(m_privacyMessage->findData(
+            services::PrivacyService::ruleId(settings.whoCanMessage)));
+        m_privacyCall->setCurrentIndex(m_privacyCall->findData(
+            services::PrivacyService::ruleId(settings.whoCanCall)));
+        m_privacyLastSeen->setCurrentIndex(m_privacyLastSeen->findData(
+            services::PrivacyService::ruleId(settings.whoSeesLastSeen)));
+        m_privacyReceipts->setChecked(settings.readReceipts);
+        m_privacyLoading = false;
+        m_privacyStatus->setText(tr("Saved on the server."));
+    });
+}
+
+void SettingsDialog::applyPrivacy()
+{
+    if (!m_privacyService || m_privacyLoading) {
+        return;
+    }
+    services::PrivacySettings settings;
+    settings.whoCanMessage = services::PrivacyService::ruleFromId(
+        m_privacyMessage->currentData().toString());
+    settings.whoCanCall =
+        services::PrivacyService::ruleFromId(m_privacyCall->currentData().toString());
+    settings.whoSeesLastSeen = services::PrivacyService::ruleFromId(
+        m_privacyLastSeen->currentData().toString());
+    settings.readReceipts = m_privacyReceipts->isChecked();
+    m_privacyStatus->setText(tr("Saving…"));
+    QPointer<SettingsDialog> self(this);
+    m_privacyService->saveSettings(
+        settings, [this, self](Result<services::PrivacySettings> result) {
+            if (!self) {
+                return;
+            }
+            if (result.isError()) {
+                m_privacyStatus->setText(
+                    tr("Could not save privacy settings: %1").arg(result.error()));
+                return;
+            }
+            m_privacyStatus->setText(tr("Saved on the server."));
+        });
+}
+
+void SettingsDialog::openBlockedUsers()
+{
+    BlockListDialog dialog(m_privacyService, this);
+    dialog.exec();
+}
+
+void SettingsDialog::openDevices()
+{
+    DevicesDialog dialog(m_privacyService, this);
+    dialog.exec();
+}
+
 void SettingsDialog::setBackupTarget(storage::StorageWorker *worker, const QString &keysPath,
                                      const QString &backupsDir)
 {
@@ -270,6 +637,184 @@ void SettingsDialog::setBackupTarget(storage::StorageWorker *worker, const QStri
 void SettingsDialog::setDiagnosticsService(services::DiagnosticsService *service)
 {
     m_diagnostics->setEnabled(service != nullptr);
+}
+
+void SettingsDialog::setNotificationService(services::NotificationService *service)
+{
+    m_notificationService = service;
+    const bool ready = service != nullptr;
+    for (QWidget *control : {static_cast<QWidget *>(m_notificationsEnabled),
+                             static_cast<QWidget *>(m_notificationSound),
+                             static_cast<QWidget *>(m_notificationPreview),
+                             static_cast<QWidget *>(m_dndSchedule),
+                             static_cast<QWidget *>(m_dndStart),
+                             static_cast<QWidget *>(m_dndEnd)}) {
+        control->setEnabled(ready);
+    }
+    if (!ready) {
+        m_notificationStatus->setText(tr("Notification settings are unavailable."));
+        return;
+    }
+    loadNotificationSettings();
+}
+
+void SettingsDialog::loadNotificationSettings()
+{
+    if (!m_notificationService) {
+        return;
+    }
+    m_notificationLoading = true;
+    const QSignalBlocker blockEnabled(m_notificationsEnabled);
+    const QSignalBlocker blockSound(m_notificationSound);
+    const QSignalBlocker blockPreview(m_notificationPreview);
+    const QSignalBlocker blockSchedule(m_dndSchedule);
+    const QSignalBlocker blockStart(m_dndStart);
+    const QSignalBlocker blockEnd(m_dndEnd);
+    m_notificationsEnabled->setChecked(m_notificationService->notificationsEnabled());
+    m_notificationSound->setChecked(m_notificationService->soundEnabled());
+    m_notificationPreview->setChecked(m_notificationService->previewEnabled());
+    m_dndSchedule->setChecked(m_notificationService->dndScheduleEnabled());
+    m_dndStart->setTime(m_notificationService->dndStart());
+    m_dndEnd->setTime(m_notificationService->dndEnd());
+    m_notificationLoading = false;
+    m_notificationStatus->setText(tr("Saved."));
+}
+
+void SettingsDialog::setExportService(services::ExportService *service)
+{
+    if (m_exportService) {
+        disconnect(m_exportService, nullptr, this, nullptr);
+    }
+    m_exportService = service;
+    if (m_exportService) {
+        connect(m_exportService, &services::ExportService::progressChanged, this,
+                [this](int percent, const QString &) {
+                    if (m_transferBusy) {
+                        m_transferProgress->setValue(percent);
+                    }
+                });
+    }
+    setTransferBusy(m_transferBusy);
+}
+
+void SettingsDialog::setImportService(services::ImportService *service)
+{
+    if (m_importService) {
+        disconnect(m_importService, nullptr, this, nullptr);
+    }
+    m_importService = service;
+    if (m_importService) {
+        connect(m_importService, &services::ImportService::progressChanged, this,
+                [this](int percent, const QString &) {
+                    if (m_transferBusy) {
+                        m_transferProgress->setValue(percent);
+                    }
+                });
+    }
+    setTransferBusy(m_transferBusy);
+}
+
+void SettingsDialog::setTransferBusy(bool busy)
+{
+    m_transferBusy = busy;
+    m_exportButton->setEnabled(m_exportService != nullptr && !busy);
+    m_importButton->setEnabled(m_importService != nullptr && !busy);
+    m_transferProgress->setVisible(busy);
+    m_transferCancel->setVisible(busy);
+    if (busy) {
+        m_transferProgress->setValue(0);
+    }
+}
+
+void SettingsDialog::startExport()
+{
+    if (!m_exportService || m_transferBusy) {
+        return;
+    }
+    QString directory = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (directory.isEmpty()) {
+        directory = QDir::homePath();
+    }
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Save backup"),
+        QDir(directory).filePath(QStringLiteral("mini-backup.minibackup")),
+        tr("MINI backup (*.minibackup)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    if (!path.endsWith(QLatin1String(".minibackup"), Qt::CaseInsensitive)) {
+        path += QLatin1String(".minibackup");
+    }
+
+    services::ExportOptions options;
+    options.outputPath = path;
+    options.includeMedia = m_exportMedia->isChecked();
+    options.includeSecretChats = false;
+
+    setTransferBusy(true);
+    m_transferStatus->setText(tr("Exporting…"));
+    m_exportService->exportBackup(options, [this](Result<services::ExportSummary> result) {
+        setTransferBusy(false);
+        if (result.isError()) {
+            m_transferStatus->setText(
+                tr("Export failed: %1").arg(result.error()));
+            return;
+        }
+        const services::ExportSummary summary = result.value();
+        if (summary.cancelled) {
+            m_transferStatus->setText(tr("Export cancelled."));
+            return;
+        }
+        m_transferStatus->setText(
+            tr("Export finished: %1 chats, %2 messages, %3 media.")
+                .arg(summary.chatCount)
+                .arg(summary.messageCount)
+                .arg(summary.mediaCount));
+    });
+}
+
+void SettingsDialog::startImport()
+{
+    if (!m_importService || m_transferBusy) {
+        return;
+    }
+    QString directory = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (directory.isEmpty()) {
+        directory = QDir::homePath();
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Choose a backup"), directory, tr("MINI backup (*.minibackup)"));
+    if (path.isEmpty()) {
+        return;
+    }
+
+    services::ImportOptions options;
+    options.inputPath = path;
+    options.backupDir = m_backupsDir;
+    options.restoreMedia = true;
+
+    setTransferBusy(true);
+    m_transferStatus->setText(tr("Importing…"));
+    m_importService->importBackup(options, [this](Result<services::ImportSummary> result) {
+        setTransferBusy(false);
+        if (result.isError()) {
+            m_transferStatus->setText(
+                tr("Import failed: %1").arg(result.error()));
+            return;
+        }
+        const services::ImportSummary summary = result.value();
+        if (summary.cancelled) {
+            m_transferStatus->setText(tr("Import cancelled."));
+            return;
+        }
+        m_transferStatus->setText(
+            tr("Import finished: %1 messages added, %2 skipped.")
+                .arg(summary.messagesAdded)
+                .arg(summary.messagesSkipped));
+        if (summary.chatsAdded > 0 || summary.messagesAdded > 0) {
+            emit dataImported();
+        }
+    });
 }
 
 void SettingsDialog::applyFromControls()

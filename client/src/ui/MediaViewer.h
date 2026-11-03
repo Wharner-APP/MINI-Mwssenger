@@ -10,8 +10,15 @@
 
 class QLabel;
 class QPushButton;
+class QSlider;
 class QStackedWidget;
 class QToolButton;
+
+#ifdef MINI_HAVE_MULTIMEDIA
+class QAudioOutput;
+class QMediaPlayer;
+class QVideoWidget;
+#endif
 
 namespace mini {
 
@@ -72,6 +79,7 @@ class MediaViewer : public QDialog
 
 public:
     explicit MediaViewer(QWidget *parent = nullptr);
+    ~MediaViewer() override;
 
     void setItems(const QVector<MediaViewerItem> &items, int index = 0);
     [[nodiscard]] const QVector<MediaViewerItem> &items() const { return m_items; }
@@ -84,6 +92,14 @@ public:
     [[nodiscard]] QToolButton *showInChatButton() const { return m_showInChat; }
     [[nodiscard]] QToolButton *nextButton() const { return m_next; }
     [[nodiscard]] QToolButton *previousButton() const { return m_previous; }
+
+    // §40.4: built-in video playback when Qt Multimedia is part of the build;
+    // with the module missing these stay null and the external-player
+    // fallback remains in place.
+    [[nodiscard]] bool playerAvailable() const;
+    [[nodiscard]] QToolButton *playPauseButton() const { return m_playPause; }
+    [[nodiscard]] QSlider *volumeSlider() const { return m_volume; }
+    [[nodiscard]] QToolButton *fullScreenButton() const { return m_fullscreen; }
 
     void showCurrent();
     void next();
@@ -102,6 +118,10 @@ protected:
 
 private:
     void updateChrome();
+    void updateVideoSource();
+    void togglePlayback();
+    void toggleFullScreen();
+    void updatePlayButton();
 
     QVector<MediaViewerItem> m_items;
     int m_index = 0;
@@ -112,6 +132,16 @@ private:
     QStackedWidget *m_stack = nullptr;
     ImageCanvas *m_canvas = nullptr;
     QWidget *m_videoPanel = nullptr;
+    QWidget *m_videoSurface = nullptr;
+    QToolButton *m_playPause = nullptr;
+    QToolButton *m_fullscreen = nullptr;
+    QSlider *m_volume = nullptr;
+    QString m_videoPath;
+#ifdef MINI_HAVE_MULTIMEDIA
+    QMediaPlayer *m_player = nullptr;
+    QAudioOutput *m_audio = nullptr;
+    QVideoWidget *m_videoWidget = nullptr;
+#endif
     QToolButton *m_previous = nullptr;
     QToolButton *m_next = nullptr;
     QToolButton *m_save = nullptr;

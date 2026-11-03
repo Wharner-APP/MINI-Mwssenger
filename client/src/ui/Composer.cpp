@@ -96,6 +96,10 @@ Composer::Composer(QWidget *parent) : QWidget(parent)
     m_gif->setAccessibleName(tr("GIF"));
     m_gif->setCheckable(true);
 
+    m_poll = makeToolButton(QStringLiteral("pollButton"), this);
+    m_poll->setToolTip(tr("Create a poll"));
+    m_poll->setAccessibleName(tr("Create a poll"));
+
     m_send = makeToolButton(QStringLiteral("sendButton"), this);
     m_send->setToolTip(tr("Send"));
     m_send->setAccessibleName(tr("Send"));
@@ -125,6 +129,7 @@ Composer::Composer(QWidget *parent) : QWidget(parent)
     inputRow->addWidget(m_emoji, 0, Qt::AlignBottom);
     inputRow->addWidget(m_sticker, 0, Qt::AlignBottom);
     inputRow->addWidget(m_gif, 0, Qt::AlignBottom);
+    inputRow->addWidget(m_poll, 0, Qt::AlignBottom);
     inputRow->addWidget(m_send, 0, Qt::AlignBottom);
 
     auto *layout = new QVBoxLayout(this);
@@ -153,6 +158,7 @@ Composer::Composer(QWidget *parent) : QWidget(parent)
     connect(m_emoji, &QToolButton::clicked, this, [this] { showPicker(0); });
     connect(m_sticker, &QToolButton::clicked, this, [this] { showPicker(1); });
     connect(m_gif, &QToolButton::clicked, this, [this] { showPicker(2); });
+    connect(m_poll, &QToolButton::clicked, this, &Composer::pollRequested);
     connect(m_emojiPanel, &EmojiPanel::emojiSelected, this, &Composer::insertEmoji);
     connect(m_emojiPanel, &EmojiPanel::recentChanged, this,
             &Composer::recentEmojiChanged);
@@ -176,6 +182,7 @@ Composer::Composer(QWidget *parent) : QWidget(parent)
         m_emoji->setIcon(Icons::icon(QStringLiteral("emoji"), t.textSecondary, 20));
         m_sticker->setIcon(Icons::icon(QStringLiteral("sticker"), t.textSecondary, 20));
         m_gif->setIcon(Icons::icon(QStringLiteral("gif"), t.textSecondary, 20));
+        m_poll->setIcon(Icons::icon(QStringLiteral("checks"), t.textSecondary, 20));
         m_send->setIcon(Icons::icon(QStringLiteral("send"), t.accent, 20));
         m_replyClose->setIcon(Icons::icon(QStringLiteral("close"), t.textTertiary, 14));
         updateHeight();
@@ -186,6 +193,7 @@ Composer::Composer(QWidget *parent) : QWidget(parent)
     m_emoji->setIcon(Icons::icon(QStringLiteral("emoji"), t.textSecondary, 20));
     m_sticker->setIcon(Icons::icon(QStringLiteral("sticker"), t.textSecondary, 20));
     m_gif->setIcon(Icons::icon(QStringLiteral("gif"), t.textSecondary, 20));
+    m_poll->setIcon(Icons::icon(QStringLiteral("checks"), t.textSecondary, 20));
     m_send->setIcon(Icons::icon(QStringLiteral("send"), t.accent, 20));
     m_replyClose->setIcon(Icons::icon(QStringLiteral("close"), t.textTertiary, 14));
 
@@ -221,6 +229,7 @@ void Composer::setComposerEnabled(bool enabled)
     m_emoji->setEnabled(enabled);
     m_sticker->setEnabled(enabled);
     m_gif->setEnabled(enabled);
+    m_poll->setEnabled(enabled);
     if (!enabled) {
         clearReplyPreview();
         hidePicker();

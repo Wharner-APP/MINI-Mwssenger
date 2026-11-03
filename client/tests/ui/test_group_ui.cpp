@@ -156,7 +156,7 @@ void TestGroupUi::sidebarOffersNewGroup()
     QSignalSpy joinRequested(&sidebar, &Sidebar::joinGroupRequested);
     QMenu *menu = sidebar.newChatButton()->menu();
     QVERIFY(menu != nullptr);
-    QCOMPARE(menu->actions().size(), 5);
+    QCOMPARE(menu->actions().size(), 7); // six entries plus the separator
     menu->actions().at(1)->trigger();
     QCOMPARE(groupRequested.count(), 1);
     QCOMPARE(chatRequested.count(), 0);

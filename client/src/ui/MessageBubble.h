@@ -1,12 +1,16 @@
 #pragma once
 
 #include "domain/Message.h"
+#include "domain/Poll.h"
+#include "domain/Reaction.h"
 
 #include <QAbstractListModel>
 #include <QHash>
 #include <QPixmap>
+#include <QPoint>
 #include <QSet>
 #include <QStyledItemDelegate>
+#include <QVariantList>
 #include <QVector>
 
 namespace mini {
@@ -51,6 +55,19 @@ public:
         ForwardedRole,
         SearchMatchRole,
         SearchQueryRole,
+        // §38.1
+        ReactionsRole,
+        // §38.3
+        PollIdRole,
+        PollQuestionRole,
+        PollOptionsRole,
+        PollCountsRole,
+        PollMyChoicesRole,
+        PollFlagsRole,
+        PollCorrectRole,
+        PollTotalRole,
+        // §38.4 / §39
+        SystemRole,
     };
 
     explicit MessageListModel(QObject *parent = nullptr);
@@ -88,6 +105,14 @@ public:
     void setHighlighted(const QString &clientMsgId);
     [[nodiscard]] QString highlighted() const { return m_highlighted; }
 
+    // §38.1: chips under a bubble grouped by emoji with a count and a flag
+    // for "mine". The model keeps them by message id.
+    void setSelfLogin(const QString &login) { m_selfLogin = login; }
+    void setReactions(const QString &chatId, const QVector<Reaction> &reactions);
+    // §38.3: tally for a poll card.
+    void setPollResult(const PollResult &result);
+    void clearPolls();
+
 private:
     void insertSorted(const Message &message);
     [[nodiscard]] static qint64 effectiveTs(const Message &message);
@@ -103,6 +128,9 @@ private:
     QSet<QString> m_searchMatches;
     QString m_searchQuery;
     QString m_highlighted;
+    QHash<QString, QVariantList> m_reactions; // message id -> chip list
+    QHash<QString, PollResult> m_polls;       // poll id -> tally
+    QString m_selfLogin;
 };
 
 class MessageBubbleDelegate : public QStyledItemDelegate
@@ -117,5 +145,16 @@ public:
     [[nodiscard]] QSize sizeHint(const QStyleOptionViewItem &option,
                                  const QModelIndex &index) const override;
 };
+
+// §38.1 / §38.3: hit testing shared by the delegate and ChatView so a click
+// on a chip or a poll option does not depend on widget coordinates.
+[[nodiscard]] bool reactionChipAt(const QStyleOptionViewItem &option,
+                                  const QModelIndex &index, const QPoint &pos,
+                                  QString *emoji);
+[[nodiscard]] bool pollOptionAt(const QStyleOptionViewItem &option,
+                                const QModelIndex &index, const QPoint &pos,
+                                int *optionIndex);
+[[nodiscard]] bool pollCloseAt(const QStyleOptionViewItem &option,
+                               const QModelIndex &index, const QPoint &pos);
 
 } // namespace mini

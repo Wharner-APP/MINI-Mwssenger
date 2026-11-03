@@ -100,6 +100,70 @@ AccountProfile parseProfile(const QJsonObject &object)
     return profile;
 }
 
+BotInfo parseBot(const QJsonObject &object)
+{
+    BotInfo bot;
+    bot.botId = firstString(object, {"bot_id", "id"});
+    bot.userId = firstString(object, {"user_id"});
+    bot.login = firstString(object, {"login"});
+    bot.displayName = firstString(object, {"display_name"});
+    bot.about = firstString(object, {"about"});
+    bot.avatarMedia = firstString(object, {"avatar_media"});
+    bot.tokenPrefix = firstString(object, {"token_prefix"});
+    bot.canJoinGroups = object.value(QStringLiteral("can_join_groups")).toBool(true);
+    bot.canReadAllGroupMessages =
+        object.value(QStringLiteral("can_read_all_group_messages")).toBool(false);
+    bot.inlineEnabled = object.value(QStringLiteral("inline_enabled")).toBool(false);
+    bot.isBot = object.value(QStringLiteral("is_bot")).toBool(true);
+    // The server is explicit that bot chats are not E2E; never default it on.
+    bot.e2e = object.value(QStringLiteral("e2e")).toBool(false);
+    bot.createdAt = toInt64(object.value(QStringLiteral("created_at")));
+    bot.updatedAt = toInt64(object.value(QStringLiteral("updated_at")));
+    return bot;
+}
+
+PrivacySettings parsePrivacy(const QJsonObject &object)
+{
+    PrivacySettings settings;
+    const QString message = firstString(object, {"who_can_message"});
+    const QString call = firstString(object, {"who_can_call"});
+    const QString lastSeen = firstString(object, {"who_sees_last_seen"});
+    if (!message.isEmpty()) {
+        settings.whoCanMessage = message;
+    }
+    if (!call.isEmpty()) {
+        settings.whoCanCall = call;
+    }
+    if (!lastSeen.isEmpty()) {
+        settings.whoSeesLastSeen = lastSeen;
+    }
+    settings.readReceipts = object.value(QStringLiteral("read_receipts")).toBool(true);
+    return settings;
+}
+
+BlockedUserInfo parseBlockedUser(const QJsonObject &object)
+{
+    BlockedUserInfo user;
+    user.userId = firstString(object, {"user_id", "blocked_user", "id"});
+    user.login = firstString(object, {"login"});
+    user.displayName = firstString(object, {"display_name"});
+    user.createdAt = toInt64(object.value(QStringLiteral("created_at")));
+    return user;
+}
+
+DeviceRecord parseDeviceRecord(const QJsonObject &object)
+{
+    DeviceRecord device;
+    device.deviceId = firstString(object, {"device_id", "id"});
+    device.name = firstString(object, {"name", "device_name"});
+    device.platform = firstString(object, {"platform"});
+    device.ip = firstString(object, {"last_ip", "ip", "ip_address"});
+    device.createdAt = toInt64(object.value(QStringLiteral("created_at")));
+    device.lastSeenAt = toInt64(object.value(QStringLiteral("last_seen_at")));
+    device.current = object.value(QStringLiteral("current")).toBool(false);
+    return device;
+}
+
 AuthSession parseSession(const QJsonObject &root){
     AuthSession session;
     session.accessToken = firstString(root, {"access_token", "accessToken"});
@@ -1637,6 +1701,306 @@ void ApiClient::recordChannelView(const QString &channelId, const QString &postI
             : -1;
         callback(ApiResult<ChannelViewInfo>::ok(view));
     });
+}
+
+// ---------------------------------------------------------------- bots
+
+void ApiClient::listBots(Callback<QList<BotInfo>> callback)
+{
+    send("GET", QStringLiteral("/api/v1/bots"), {}, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<QList<BotInfo>>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<QList<BotInfo>>::fail(error));
+                 return;
+             }
+             QList<BotInfo> bots;
+             const QJsonArray array = root.value(QStringLiteral("bots")).toArray();
+             for (const QJsonValue &value : array) {
+                 if (value.isObject()) {
+                     bots.append(parseBot(value.toObject()));
+                 }
+             }
+             callback(ApiResult<QList<BotInfo>>::ok(bots));
+         });
+}
+
+void ApiClient::createBot(const BotCreateRequest &request, Callback<BotCreateResult> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("login"), request.login);
+    body.insert(QStringLiteral("display_name"), request.displayName);
+    body.insert(QStringLiteral("about"), request.about);
+    body.insert(QStringLiteral("can_join_groups"), request.canJoinGroups);
+    body.insert(QStringLiteral("can_read_all_group_messages"),
+                request.canReadAllGroupMessages);
+    body.insert(QStringLiteral("inline_enabled"), request.inlineEnabled);
+    send("POST", QStringLiteral("/api/v1/bots"), body, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<BotCreateResult>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<BotCreateResult>::fail(error));
+                 return;
+             }
+             BotCreateResult result;
+             result.bot = parseBot(root.value(QStringLiteral("bot")).toObject());
+             result.token = firstString(root, {"token"});
+             result.tokenShownOnce =
+                 root.value(QStringLiteral("token_shown_once")).toBool(true);
+             callback(ApiResult<BotCreateResult>::ok(result));
+         });
+}
+
+void ApiClient::getBot(const QString &botId, Callback<BotInfo> callback)
+{
+    const QString path = QStringLiteral("/api/v1/bots/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(botId));
+    send("GET", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<BotInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<BotInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<BotInfo>::ok(
+            parseBot(root.value(QStringLiteral("bot")).toObject())));
+    });
+}
+
+void ApiClient::rotateBotToken(const QString &botId, Callback<BotTokenResult> callback)
+{
+    const QString path = QStringLiteral("/api/v1/bots/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(botId))
+        + QStringLiteral("/rotate_token");
+    send("POST", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<BotTokenResult>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<BotTokenResult>::fail(error));
+            return;
+        }
+        BotTokenResult result;
+        result.token = firstString(root, {"token"});
+        result.tokenPrefix = firstString(root, {"token_prefix"});
+        result.tokenShownOnce = root.value(QStringLiteral("token_shown_once")).toBool(true);
+        callback(ApiResult<BotTokenResult>::ok(result));
+    });
+}
+
+void ApiClient::deleteBot(const QString &botId, Callback<Empty> callback)
+{
+    const QString path = QStringLiteral("/api/v1/bots/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(botId));
+    send("DELETE", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::sendBotMessage(const QString &botId, const QString &text,
+                               Callback<BotSendResult> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("text"), text);
+    const QString path = QStringLiteral("/api/v1/bots/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(botId))
+        + QStringLiteral("/messages");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<BotSendResult>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<BotSendResult>::fail(error));
+            return;
+        }
+        BotSendResult result;
+        result.messageId = root.value(QStringLiteral("message"))
+                               .toObject()
+                               .value(QStringLiteral("message_id"))
+                               .toString();
+        result.updateId = root.value(QStringLiteral("update_id")).toVariant().toString();
+        callback(ApiResult<BotSendResult>::ok(result));
+    });
+}
+
+// ------------------------------------------------------------- privacy
+
+void ApiClient::getPrivacySettings(Callback<PrivacySettings> callback)
+{
+    send("GET", QStringLiteral("/api/v1/privacy"), {}, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<PrivacySettings>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<PrivacySettings>::fail(error));
+                 return;
+             }
+             callback(ApiResult<PrivacySettings>::ok(parsePrivacy(root)));
+         });
+}
+
+void ApiClient::updatePrivacySettings(const PrivacySettings &settings,
+                                      Callback<PrivacySettings> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("who_can_message"), settings.whoCanMessage);
+    body.insert(QStringLiteral("who_can_call"), settings.whoCanCall);
+    body.insert(QStringLiteral("who_sees_last_seen"), settings.whoSeesLastSeen);
+    body.insert(QStringLiteral("read_receipts"), settings.readReceipts);
+    send("PATCH", QStringLiteral("/api/v1/privacy"), body, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<PrivacySettings>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<PrivacySettings>::fail(error));
+                 return;
+             }
+             callback(ApiResult<PrivacySettings>::ok(parsePrivacy(root)));
+         });
+}
+
+void ApiClient::listBlocks(Callback<QList<BlockedUserInfo>> callback)
+{
+    send("GET", QStringLiteral("/api/v1/blocks"), {}, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<QList<BlockedUserInfo>>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<QList<BlockedUserInfo>>::fail(error));
+                 return;
+             }
+             QList<BlockedUserInfo> users;
+             const QJsonArray array = root.value(QStringLiteral("blocks")).toArray();
+             for (const QJsonValue &value : array) {
+                 if (value.isObject()) {
+                     users.append(parseBlockedUser(value.toObject()));
+                 }
+             }
+             callback(ApiResult<QList<BlockedUserInfo>>::ok(users));
+         });
+}
+
+void ApiClient::blockUser(const QString &userOrLogin, Callback<Empty> callback)
+{
+    const QString path = QStringLiteral("/api/v1/blocks/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(userOrLogin));
+    send("POST", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::unblockUser(const QString &userId, Callback<Empty> callback)
+{
+    const QString path = QStringLiteral("/api/v1/blocks/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(userId));
+    send("DELETE", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::listDevices(Callback<QList<DeviceRecord>> callback)
+{
+    send("GET", QStringLiteral("/api/v1/devices"), {}, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<QList<DeviceRecord>>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<QList<DeviceRecord>>::fail(error));
+                 return;
+             }
+             QList<DeviceRecord> devices;
+             const QJsonArray array = root.value(QStringLiteral("devices")).toArray();
+             for (const QJsonValue &value : array) {
+                 if (value.isObject()) {
+                     devices.append(parseDeviceRecord(value.toObject()));
+                 }
+             }
+             callback(ApiResult<QList<DeviceRecord>>::ok(devices));
+         });
+}
+
+void ApiClient::revokeDevice(const QString &deviceId, Callback<Empty> callback)
+{
+    const QString path = QStringLiteral("/api/v1/devices/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(deviceId));
+    send("DELETE", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::revokeAllDevices(Callback<RevokeAllResult> callback)
+{
+    send("POST", QStringLiteral("/api/v1/devices/revoke_all"), {}, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<RevokeAllResult>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<RevokeAllResult>::fail(error));
+                 return;
+             }
+             RevokeAllResult result;
+             result.revokedDevices =
+                 root.value(QStringLiteral("revoked_devices")).toInt();
+             result.revokedSessions =
+                 root.value(QStringLiteral("revoked_sessions")).toInt();
+             callback(ApiResult<RevokeAllResult>::ok(result));
+         });
 }
 
 void ApiClient::mediaInit(qint64 totalSize, qint64 chunkSize,

@@ -2,6 +2,7 @@
 
 #include "core/Clock.h"
 #include "domain/Channel.h"
+#include "domain/Disappearing.h"
 #include "domain/Group.h"
 #include "domain/Media.h"
 #include "net/ApiClient.h"
@@ -15,11 +16,15 @@
 #include "storage/MediaRepo.h"
 #include "storage/MessagesRepo.h"
 #include "storage/OutboxRepo.h"
+#include "storage/PollsRepo.h"
+#include "storage/ReactionsRepo.h"
 #include "storage/Sql.h"
 #include "storage/StorageWorker.h"
 
+#include <QCoreApplication>
 #include <QFuture>
 #include <QFutureWatcher>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPair>
@@ -113,6 +118,26 @@ StoredMessage loadMessage(storage::Database &db, const QString &clientMsgId)
     stored.peerLogin = peer.isOk() ? peer.value() : QString();
 
     const MediaKind kind = stored.message.kind;
+    if (!stored.message.pollId.isEmpty()) {
+        // §38.3: the wire form is the poll definition, not the visible
+        // question, so recipients can render the options offline.
+        const auto poll = storage::PollsRepo(db).get(stored.message.pollId);
+        if (poll.isError() || !poll.value().has_value()) {
+            stored.wireOk = false;
+            return stored;
+        }
+        PollBody body;
+        body.pollId = poll.value()->pollId;
+        body.question = poll.value()->question;
+        body.options = poll.value()->options;
+        body.anonymous = poll.value()->anonymous;
+        body.multiple = poll.value()->multiple;
+        body.quiz = poll.value()->quiz;
+        body.allowChange = poll.value()->allowChange;
+        body.correctOption = poll.value()->correctOption;
+        stored.wire = encodePollBody(body);
+        return stored;
+    }
     if (kind == MediaKind::Text) {
         stored.wire = stored.message.body.toUtf8();
     } else if (kind == MediaKind::Sticker) {
@@ -176,6 +201,8 @@ struct IncomingRich
     qint64 mediaSize = 0;
     qint64 mediaDurationMs = 0;
     QVector<MediaWire> wires;
+    bool hasPoll = false;
+    PollBody poll;
 };
 
 IncomingRich makeIncomingRich(const QByteArray &plain)
@@ -184,6 +211,12 @@ IncomingRich makeIncomingRich(const QByteArray &plain)
     IncomingRich out;
     out.kind = rich.kind;
     out.wires = rich.items;
+    if (rich.hasPoll) {
+        out.hasPoll = true;
+        out.poll = rich.poll;
+        out.body = rich.poll.question;
+        return out;
+    }
     switch (rich.kind) {
     case MediaKind::Text:
         out.body = QString::fromUtf8(plain);
@@ -407,6 +440,12 @@ MessageService::MessageService(storage::StorageWorker *storage, QObject *parent)
 {
     m_pumpTimer.setSingleShot(true);
     connect(&m_pumpTimer, &QTimer::timeout, this, &MessageService::pump);
+    // §39.3: the cleanup pass runs every 30 s on the storage thread.
+    m_expiryTimer.setInterval(30 * 1000);
+    connect(&m_expiryTimer, &QTimer::timeout, this, &MessageService::runExpiryCleanup);
+    if (m_storage) {
+        m_expiryTimer.start();
+    }
 }
 
 void MessageService::setTransport(MessageTransport *transport)
@@ -460,6 +499,53 @@ QString MessageService::sendText(const QString &chatId, const QString &text,
     message.replyToClientMsgId = replyToClientMsgId;
     message.clientMsgId = clientMsgId;
     return enqueueMessage(message);
+}
+
+QString MessageService::recordPlainText(const QString &chatId, const QString &text,
+                                        const QString &serverMsgId)
+{
+    if (!m_storage) {
+        emit errorOccurred(QStringLiteral("storage_unavailable"), QString());
+        return {};
+    }
+    if (chatId.isEmpty() || text.trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("empty_message"), QString());
+        return {};
+    }
+    Message message;
+    message.clientMsgId = Ids::clientMsgId();
+    message.chatId = chatId;
+    message.body = text;
+    message.kind = MediaKind::Text;
+    message.state = MessageState::Sent;
+    message.outgoing = true;
+    message.localTs = Clock::nowMs();
+    message.serverTs = message.localTs;
+    message.serverMsgId = serverMsgId;
+    message.senderLogin = m_selfLogin;
+    const QString id = message.clientMsgId;
+    auto future = m_storage->submit([message](storage::Database &db) {
+        auto inserted = storage::MessagesRepo(db).insertQueued(message);
+        if (inserted.isError()) {
+            return false;
+        }
+        auto updated = storage::MessagesRepo(db).updateState(
+            message.clientMsgId, MessageState::Sent, message.localTs, message.serverMsgId);
+        if (updated.isError()) {
+            return false;
+        }
+        storage::ChatsRepo(db).touchLastMessage(message.chatId, message.localTs,
+                                                message.body);
+        return true;
+    });
+    watch<bool>(this, future, [this, message](bool stored) {
+        if (!stored) {
+            emit errorOccurred(QStringLiteral("message_store_failed"), QString());
+            return;
+        }
+        emit messageAdded(message);
+    });
+    return id;
 }
 
 QString MessageService::sendMedia(const QString &chatId, const QString &mediaId,
@@ -549,6 +635,63 @@ QString MessageService::sendAlbum(const QString &chatId, const QStringList &medi
     message.body = caption.left(1024); // §11.5 #97
     message.replyToClientMsgId = replyToClientMsgId;
     message.clientMsgId = clientMsgId;
+    return enqueueMessage(message);
+}
+
+QString MessageService::sendPoll(const QString &chatId, const PollBody &poll,
+                                 const QString &clientMsgId)
+{
+    const QString question = poll.question.trimmed();
+    if (!m_storage || chatId.isEmpty() || question.isEmpty()
+        || question.size() > kPollQuestionMax
+        || poll.options.size() < kPollMinOptions || poll.options.size() > kPollMaxOptions) {
+        emit errorOccurred(QStringLiteral("poll.invalid"), QString());
+        return {};
+    }
+    QStringList options;
+    for (const QString &raw : poll.options) {
+        const QString option = raw.trimmed();
+        if (option.isEmpty() || option.size() > kPollOptionMax) {
+            emit errorOccurred(QStringLiteral("poll.invalid"), QString());
+            return {};
+        }
+        options.append(option);
+    }
+    if (poll.quiz && (poll.correctOption < 0 || poll.correctOption >= options.size())) {
+        emit errorOccurred(QStringLiteral("poll.invalid"), QString());
+        return {};
+    }
+
+    const QString pollId =
+        poll.pollId.isEmpty() ? Ids::clientMsgId() : poll.pollId;
+    const QString messageId =
+        clientMsgId.isEmpty() ? Ids::clientMsgId() : clientMsgId;
+
+    Poll record;
+    record.pollId = pollId;
+    record.chatId = chatId;
+    record.messageClientMsgId = messageId;
+    record.question = question;
+    record.options = options;
+    record.anonymous = poll.anonymous;
+    record.multiple = poll.multiple;
+    record.quiz = poll.quiz;
+    record.allowChange = poll.allowChange;
+    record.correctOption = poll.quiz ? poll.correctOption : -1;
+    record.createdBy = m_selfLogin;
+    record.createdAt = Clock::nowMs();
+
+    // The poll row must exist before the send pump reads the message body.
+    m_storage->submit([record](storage::Database &db) {
+        return storage::PollsRepo(db).upsert(record).isOk();
+    });
+
+    Message message;
+    message.chatId = chatId;
+    message.kind = MediaKind::Text;
+    message.body = question;
+    message.pollId = pollId;
+    message.clientMsgId = messageId;
     return enqueueMessage(message);
 }
 
@@ -1040,6 +1183,227 @@ void MessageService::searchInChat(const QString &chatId, const QString &query,
         });
 }
 
+void MessageService::toggleReaction(const QString &clientMsgId, const QString &emoji,
+                                    Done<bool> done)
+{
+    if (!m_storage || clientMsgId.isEmpty() || emoji.isEmpty() || m_selfLogin.isEmpty()) {
+        done(Result<bool>::error(QStringLiteral("reaction.invalid")));
+        return;
+    }
+    const QString self = m_selfLogin;
+    auto future = m_storage->submit([clientMsgId, emoji, self](storage::Database &db) {
+        const auto lookup = storage::MessagesRepo(db).find(clientMsgId);
+        if (lookup.isError() || !lookup.value().found) {
+            return QPair<int, QString>{-1, QStringLiteral("reaction.message_missing")};
+        }
+        const Message &message = lookup.value().message;
+        storage::ReactionsRepo repo(db);
+        auto mine = repo.listForMessage(clientMsgId);
+        if (mine.isError()) {
+            return QPair<int, QString>{-1, mine.error()};
+        }
+        bool remove = false;
+        for (const Reaction &reaction : mine.value()) {
+            if (reaction.senderLogin.compare(self, Qt::CaseInsensitive) == 0) {
+                remove = reaction.emoji == emoji;
+                break;
+            }
+        }
+        if (remove) {
+            repo.remove(clientMsgId, self);
+        } else {
+            // §38.1: groups cap distinct reactions at 20.
+            auto distinct = repo.distinctCount(clientMsgId);
+            if (distinct.isOk() && distinct.value() >= kMaxDistinctReactions) {
+                bool known = false;
+                auto all = repo.listForMessage(clientMsgId);
+                if (all.isOk()) {
+                    for (const Reaction &reaction : all.value()) {
+                        if (reaction.emoji == emoji) {
+                            known = true;
+                            break;
+                        }
+                    }
+                }
+                if (!known) {
+                    return QPair<int, QString>{-1,
+                                               QStringLiteral("reaction.limit")};
+                }
+            }
+            Reaction reaction;
+            reaction.clientMsgId = clientMsgId;
+            reaction.chatId = message.chatId;
+            reaction.senderLogin = self;
+            reaction.emoji = emoji;
+            reaction.createdAt = Clock::nowMs();
+            repo.set(reaction);
+        }
+        return QPair<int, QString>{0, message.chatId};
+    });
+    watch<QPair<int, QString>>(
+        this, future,
+        [this, clientMsgId, emoji, done](QPair<int, QString> result) {
+            if (result.first != 0) {
+                done(Result<bool>::error(result.second));
+                return;
+            }
+            const QString chatId = result.second;
+            emit reactionsChanged(chatId, clientMsgId);
+            QJsonObject payload;
+            payload.insert(QStringLiteral("target"), clientMsgId);
+            payload.insert(QStringLiteral("emoji"), emoji);
+            sendChatEvent(chatId, QStringLiteral("reaction"), payload);
+            done(Result<bool>::ok(true));
+        });
+}
+
+void MessageService::reactionsForChat(const QString &chatId,
+                                      Done<QVector<Reaction>> done)
+{
+    if (!m_storage) {
+        done(Result<QVector<Reaction>>::error(QStringLiteral("storage_unavailable")));
+        return;
+    }
+    auto future = m_storage->submit([chatId](storage::Database &db) {
+        return storage::ReactionsRepo(db).listForChat(chatId);
+    });
+    watch<Result<QVector<Reaction>>>(
+        this, future, [done = std::move(done)](Result<QVector<Reaction>> result) {
+            done(std::move(result));
+        });
+}
+
+void MessageService::sendControlEvent(const QString &chatId, const QString &kind,
+                                      const QJsonObject &payload, Done<bool> done)
+{
+    if (!m_transport || chatId.isEmpty() || kind.isEmpty() || !m_crypto) {
+        if (done) {
+            done(Result<bool>::error(QStringLiteral("control_unavailable")));
+        }
+        return;
+    }
+    sendChatEvent(chatId, kind, payload);
+    if (done) {
+        done(Result<bool>::ok(true));
+    }
+}
+
+void MessageService::setChatExpiry(const QString &chatId, qint64 afterMs, Done<bool> done)
+{
+    if (!m_storage || chatId.isEmpty()) {
+        done(Result<bool>::error(QStringLiteral("storage_unavailable")));
+        return;
+    }
+    if (!disappearing::isValid(afterMs)) {
+        done(Result<bool>::error(QStringLiteral("expiry.invalid")));
+        return;
+    }
+    const QString self = m_selfLogin;
+    const QString body =
+        QCoreApplication::translate("MessageService", "Disappearing messages: %1")
+            .arg(disappearing::label(afterMs));
+    const qint64 now = Clock::nowMs();
+    Message system;
+    system.clientMsgId = Ids::clientMsgId();
+    system.chatId = chatId;
+    system.senderLogin = self;
+    system.body = body;
+    system.system = true;
+    system.outgoing = false;
+    system.state = MessageState::Received;
+    system.localTs = now;
+    system.serverTs = now;
+    auto future = m_storage->submit([chatId, afterMs, system](storage::Database &db) {
+        auto changed = storage::ChatsRepo(db).setExpiresAfter(chatId, afterMs);
+        if (changed.isError()) {
+            return changed;
+        }
+        // §39.2: changing the timer leaves a service line in the history.
+        if (auto inserted = storage::MessagesRepo(db).insertReceived(system);
+            inserted.isError()) {
+            return inserted;
+        }
+        storage::ChatsRepo(db).touchLastMessage(chatId, system.serverTs, system.body,
+                                                 false);
+        return changed;
+    });
+    watch<Result<bool>>(this, future,
+                        [this, chatId, afterMs, system, done](Result<bool> result) {
+                            if (result.isError()) {
+                                done(result);
+                                return;
+                            }
+                            emit chatTimerChanged(chatId, afterMs);
+                            emit messageAdded(system);
+                            QJsonObject payload;
+                            payload.insert(QStringLiteral("after_ms"),
+                                           static_cast<double>(afterMs));
+                            sendChatEvent(chatId, QStringLiteral("chat_timer"), payload);
+                            done(Result<bool>::ok(true));
+                        });
+}
+
+void MessageService::runExpiryCleanup()
+{
+    if (!m_storage) {
+        return;
+    }
+    const qint64 now = Clock::nowMs();
+    auto future = m_storage->submit([now](storage::Database &db) {
+        auto removed = storage::MessagesRepo(db).removeExpired(now);
+        if (removed.isOk()) {
+            QStringList chats;
+            for (const Message &message : removed.value()) {
+                if (!chats.contains(message.chatId)) {
+                    chats.append(message.chatId);
+                }
+            }
+            for (const QString &chatId : std::as_const(chats)) {
+                storage::ChatsRepo(db).recalculateLastMessage(chatId);
+            }
+        }
+        return removed;
+    });
+    watch<Result<QVector<Message>>>(
+        this, future, [this](Result<QVector<Message>> result) {
+            if (result.isError()) {
+                return;
+            }
+            QHash<QString, QStringList> targets;
+            QStringList mediaIds;
+            for (const Message &message : result.value()) {
+                emit messageRemoved(message.clientMsgId, message.chatId);
+                targets[message.chatId].append(message.clientMsgId);
+                if (!message.mediaId.isEmpty()) {
+                    mediaIds.append(message.mediaId);
+                }
+            }
+            if (!mediaIds.isEmpty()) {
+                emit mediaExpired(mediaIds);
+            }
+            for (auto it = targets.cbegin(); it != targets.cend(); ++it) {
+                emit pinsChanged(it.key());
+                QJsonObject payload;
+                QJsonArray ids;
+                for (const QString &id : it.value()) {
+                    ids.append(id);
+                }
+                payload.insert(QStringLiteral("targets"), ids);
+                sendChatEvent(it.key(), QStringLiteral("expire"), payload);
+            }
+        });
+}
+
+void MessageService::setExpiryIntervalMs(int milliseconds)
+{
+    if (milliseconds <= 0) {
+        m_expiryTimer.stop();
+        return;
+    }
+    m_expiryTimer.setInterval(qMax(1000, milliseconds));
+    m_expiryTimer.start();
+}
+
 void MessageService::sendChatEvent(const QString &chatId, const QString &kind,
                                    const QJsonObject &payload)
 {
@@ -1169,6 +1533,18 @@ void MessageService::applyIncomingEvent(const QString &kind, const QString &chat
         return;
     }
     const QJsonObject payload = document.object();
+    if (kind == QLatin1String("reaction")) {
+        applyReactionEvent(chatId, payload, sender);
+        return;
+    }
+    if (kind == QLatin1String("expire")) {
+        applyExpireEvent(chatId, payload);
+        return;
+    }
+    if (kind == QLatin1String("chat_timer")) {
+        applyChatTimerEvent(chatId, payload);
+        return;
+    }
     const QString target = payload.value(QStringLiteral("target")).toString();
     if (target.isEmpty()) {
         return;
@@ -1213,6 +1589,166 @@ void MessageService::applyIncomingEvent(const QString &kind, const QString &chat
     }
 }
 
+void MessageService::applyReactionEvent(const QString &chatId, const QJsonObject &payload,
+                                        const QString &sender)
+{
+    const QString target = payload.value(QStringLiteral("target")).toString();
+    const QString emoji = payload.value(QStringLiteral("emoji")).toString();
+    if (target.isEmpty() || emoji.isEmpty() || sender.isEmpty()) {
+        return;
+    }
+    auto future = m_storage->submit([chatId, target, emoji, sender](
+                                        storage::Database &db) {
+        const StoredMessage stored = loadMessage(db, target);
+        if (!stored.found || stored.message.chatId != chatId) {
+            return false; // a control event may not touch another chat
+        }
+        storage::ReactionsRepo repo(db);
+        auto existing = repo.listForMessage(target);
+        if (existing.isError()) {
+            return false;
+        }
+        bool remove = false;
+        for (const Reaction &reaction : existing.value()) {
+            if (reaction.senderLogin.compare(sender, Qt::CaseInsensitive) == 0) {
+                remove = reaction.emoji == emoji;
+                break;
+            }
+        }
+        if (remove) {
+            repo.remove(target, sender);
+        } else {
+            auto distinct = repo.distinctCount(target);
+            if (distinct.isOk() && distinct.value() >= kMaxDistinctReactions) {
+                bool known = false;
+                for (const Reaction &reaction : existing.value()) {
+                    if (reaction.emoji == emoji) {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known) {
+                    return false;
+                }
+            }
+            Reaction reaction;
+            reaction.clientMsgId = target;
+            reaction.chatId = chatId;
+            reaction.senderLogin = sender;
+            reaction.emoji = emoji;
+            reaction.createdAt = Clock::nowMs();
+            repo.set(reaction);
+        }
+        return true;
+    });
+    watch<bool>(this, future, [this, chatId, target](bool changed) {
+        if (changed) {
+            emit reactionsChanged(chatId, target);
+        }
+    });
+}
+
+void MessageService::applyExpireEvent(const QString &chatId, const QJsonObject &payload)
+{
+    QStringList targets;
+    const QJsonArray array = payload.value(QStringLiteral("targets")).toArray();
+    for (const QJsonValue &value : array) {
+        if (value.isString()) {
+            targets.append(value.toString());
+        }
+    }
+    const QString single = payload.value(QStringLiteral("target")).toString();
+    if (!single.isEmpty()) {
+        targets.append(single);
+    }
+    if (targets.isEmpty()) {
+        return;
+    }
+    auto future = m_storage->submit([chatId, targets](storage::Database &db) {
+        QStringList removed;
+        for (const QString &target : targets) {
+            const StoredMessage stored = loadMessage(db, target);
+            if (!stored.found || stored.message.chatId != chatId) {
+                continue;
+            }
+            storage::MessagesRepo(db).deleteLocal(target);
+            removed.append(target);
+        }
+        if (!removed.isEmpty()) {
+            storage::ChatsRepo(db).recalculateLastMessage(chatId);
+        }
+        return removed;
+    });
+    watch<QStringList>(this, future, [this, chatId](QStringList removed) {
+        for (const QString &target : std::as_const(removed)) {
+            emit messageRemoved(target, chatId);
+        }
+        if (!removed.isEmpty()) {
+            emit pinsChanged(chatId);
+        }
+    });
+}
+
+void MessageService::applyChatTimerEvent(const QString &chatId, const QJsonObject &payload)
+{
+    const qint64 afterMs =
+        static_cast<qint64>(payload.value(QStringLiteral("after_ms")).toDouble(0));
+    if (!disappearing::isValid(afterMs)) {
+        return;
+    }
+    const QString self = m_selfLogin;
+    const QString body =
+        QCoreApplication::translate("MessageService", "Disappearing messages: %1")
+            .arg(disappearing::label(afterMs));
+    const qint64 now = Clock::nowMs();
+    Message system;
+    system.clientMsgId = Ids::clientMsgId();
+    system.chatId = chatId;
+    system.senderLogin = self;
+    system.body = body;
+    system.system = true;
+    system.outgoing = false;
+    system.state = MessageState::Received;
+    system.localTs = now;
+    system.serverTs = now;
+    auto future = m_storage->submit([chatId, afterMs, system](storage::Database &db) {
+        auto changed = storage::ChatsRepo(db).setExpiresAfter(chatId, afterMs);
+        if (changed.isError()) {
+            return changed;
+        }
+        if (auto inserted = storage::MessagesRepo(db).insertReceived(system);
+            inserted.isError()) {
+            return inserted;
+        }
+        storage::ChatsRepo(db).touchLastMessage(chatId, system.serverTs, system.body,
+                                                 false);
+        return changed;
+    });
+    watch<Result<bool>>(this, future,
+                        [this, chatId, afterMs, system](Result<bool> result) {
+                            if (result.isOk()) {
+                                emit chatTimerChanged(chatId, afterMs);
+                                emit messageAdded(system);
+                            }
+                        });
+}
+
+void MessageService::notifyPollChange(const QString &pollId)
+{
+    if (!m_storage || pollId.isEmpty()) {
+        return;
+    }
+    auto future = m_storage->submit([pollId](storage::Database &db) {
+        return storage::PollsRepo(db).get(pollId);
+    });
+    watch<Result<std::optional<Poll>>>(
+        this, future, [this](Result<std::optional<Poll>> result) {
+            if (result.isOk() && result.value().has_value()) {
+                emit pollsChanged(result.value()->chatId, result.value()->pollId);
+            }
+        });
+}
+
 void MessageService::loadHistory(const QString &chatId, const MessageCursor &before, int limit,
                                  Done<QVector<Message>> done){
     if (!m_storage) {
@@ -1235,7 +1771,13 @@ void MessageService::markChatRead(const QString &chatId, Done<int> done)
         return;
     }
     auto future = m_storage->submit([chatId](storage::Database &db) {
-        return storage::MessagesRepo(db).markRead(chatId);
+        // §39.2: reading starts the disappearing timer, so the chat row is
+        // read first and its value passed into the same transaction.
+        auto chat = storage::ChatsRepo(db).get(chatId);
+        const qint64 after = chat.isOk() && chat.value().has_value()
+            ? chat.value()->expiresAfterMs
+            : 0;
+        return storage::MessagesRepo(db).markRead(chatId, after, Clock::nowMs());
     });
     watch<Result<int>>(this, future, [done = std::move(done)](Result<int> result) {
         done(std::move(result));
@@ -1611,6 +2153,70 @@ void MessageService::handleSendFailure(const OutboxItem &item, const net::ApiErr
     });
 }
 
+void MessageService::handleBotIncoming(const net::Envelope &envelope, const QString &sender)
+{
+    if (!m_storage || m_selfLogin.isEmpty()) {
+        return;
+    }
+    const QString chatId = ChatService::directChatId(m_selfLogin, sender);
+    const QString body = QString::fromUtf8(envelope.ciphertext);
+    const QString displayName =
+        envelope.header.value(QStringLiteral("bot_display_name")).toString();
+
+    Message message;
+    message.clientMsgId = envelope.clientMsgId;
+    message.chatId = chatId;
+    message.body = body;
+    message.kind = MediaKind::Text;
+    message.senderLogin = sender;
+    message.outgoing = false;
+    message.state = MessageState::Received;
+    message.localTs = Clock::nowMs();
+    const qint64 serverTs =
+        static_cast<qint64>(envelope.header.value(QStringLiteral("ts")).toDouble(0));
+    message.serverTs = serverTs;
+
+    auto future = m_storage->submit([message, sender, displayName](storage::Database &db) {
+        storage::ChatsRepo chats(db);
+        auto existing = chats.get(message.chatId);
+        if (existing.isError()) {
+            return -1;
+        }
+        if (!existing.value().has_value()) {
+            Chat chat;
+            chat.chatId = message.chatId;
+            chat.kind = QStringLiteral("direct");
+            chat.peerLogin = sender;
+            chat.title = displayName.isEmpty() ? sender : displayName;
+            chat.updatedAt =
+                message.serverTs > 0 ? message.serverTs : message.localTs;
+            if (chats.upsert(chat).isError()) {
+                return -1;
+            }
+        }
+        auto inserted = storage::MessagesRepo(db).insertReceived(message);
+        if (inserted.isError()) {
+            return -1;
+        }
+        if (!inserted.value()) {
+            return 0;
+        }
+        auto touched = storage::ChatsRepo(db).touchLastMessage(
+            message.chatId, message.serverTs > 0 ? message.serverTs : message.localTs,
+            message.body, true);
+        return touched.isError() ? -1 : 1;
+    });
+    watch<int>(this, future, [this, message](int stored) {
+        if (stored < 0) {
+            emit errorOccurred(QStringLiteral("storage_failed"), QString());
+            return;
+        }
+        if (stored > 0) {
+            emit messageAdded(message);
+        }
+    });
+}
+
 void MessageService::handleIncoming(const net::Envelope &envelope)
 {
     if (!m_storage) {
@@ -1629,6 +2235,13 @@ void MessageService::handleIncoming(const net::Envelope &envelope)
         || group_ids::isGroupChat(envelope.chatId)
         || channel_ids::isChannelChat(envelope.chatId)) {
         handleGroupIncoming(envelope, sender, false);
+        return;
+    }
+    // §29.14: a bot reply is plaintext, is labelled `bot` and is addressed to
+    // the account id rather than the direct chat id.
+    if (envelope.kind == QStringLiteral("bot")
+        || envelope.header.value(QStringLiteral("bot")).toBool()) {
+        handleBotIncoming(envelope, sender);
         return;
     }
     if (!m_crypto) {
@@ -1665,6 +2278,18 @@ void MessageService::handleIncoming(const net::Envelope &envelope)
         emit controlMessageReceived(sender, envelope.kind, plain.value());
         return;
     }
+    if (envelope.kind == QStringLiteral("reaction")
+        || envelope.kind == QStringLiteral("expire")
+        || envelope.kind == QStringLiteral("chat_timer")) {
+        applyIncomingEvent(envelope.kind, envelope.chatId, plain.value(), sender);
+        return;
+    }
+    if (envelope.kind == QStringLiteral("poll_vote")
+        || envelope.kind == QStringLiteral("poll_close")) {
+        // §38.3: PollService owns the tally; MessageService only decrypts.
+        emit controlMessageReceived(sender, envelope.kind, plain.value());
+        return;
+    }
     if (envelope.kind == QStringLiteral("message_edit")
         || envelope.kind == QStringLiteral("message_delete")) {
         applyIncomingEvent(envelope.kind, envelope.chatId, plain.value(), sender);
@@ -1682,6 +2307,7 @@ void MessageService::handleIncoming(const net::Envelope &envelope)
     message.mediaName = rich.mediaName;
     message.mediaSize = rich.mediaSize;
     message.mediaDurationMs = rich.mediaDurationMs;
+    message.pollId = rich.hasPoll ? rich.poll.pollId : QString();
     message.senderLogin = sender;
     message.replyToClientMsgId =
         envelope.header.value(QStringLiteral("reply_to")).toString();
@@ -1695,9 +2321,29 @@ void MessageService::handleIncoming(const net::Envelope &envelope)
     message.serverTs = serverTs;
 
     const QVector<MediaWire> wires = rich.wires;
-    auto future = m_storage->submit([message, wires](storage::Database &db) {
+    const bool hasPoll = rich.hasPoll;
+    const PollBody pollDef = rich.poll;
+    auto future = m_storage->submit([message, wires, hasPoll, pollDef](storage::Database &db) {
         for (const MediaWire &wire : wires) {
             if (!mediaFromWire(db, wire, message.chatId, message.kind).has_value()) {
+                return -1;
+            }
+        }
+        if (hasPoll) {
+            Poll poll;
+            poll.pollId = pollDef.pollId;
+            poll.chatId = message.chatId;
+            poll.messageClientMsgId = message.clientMsgId;
+            poll.question = pollDef.question;
+            poll.options = pollDef.options;
+            poll.anonymous = pollDef.anonymous;
+            poll.multiple = pollDef.multiple;
+            poll.quiz = pollDef.quiz;
+            poll.allowChange = pollDef.allowChange;
+            poll.correctOption = pollDef.correctOption;
+            poll.createdBy = message.senderLogin;
+            poll.createdAt = message.serverTs > 0 ? message.serverTs : message.localTs;
+            if (storage::PollsRepo(db).upsert(poll).isError()) {
                 return -1;
             }
         }
@@ -1741,6 +2387,9 @@ void MessageService::handleIncoming(const net::Envelope &envelope)
         }
         if (stored == 1) {
             emit messageAdded(message);
+            if (!message.pollId.isEmpty()) {
+                emit pollsChanged(message.chatId, message.pollId);
+            }
         }
     });
 }
@@ -1787,8 +2436,16 @@ void MessageService::handleGroupIncoming(const net::Envelope &envelope,
     }
 
     if (envelope.kind == QStringLiteral("message_edit")
-        || envelope.kind == QStringLiteral("message_delete")) {
+        || envelope.kind == QStringLiteral("message_delete")
+        || envelope.kind == QStringLiteral("reaction")
+        || envelope.kind == QStringLiteral("expire")
+        || envelope.kind == QStringLiteral("chat_timer")) {
         applyIncomingEvent(envelope.kind, envelope.chatId, plain.value(), senderLogin);
+        return;
+    }
+    if (envelope.kind == QStringLiteral("poll_vote")
+        || envelope.kind == QStringLiteral("poll_close")) {
+        emit controlMessageReceived(senderLogin, envelope.kind, plain.value());
         return;
     }
 
@@ -1803,6 +2460,7 @@ void MessageService::handleGroupIncoming(const net::Envelope &envelope,
     message.mediaName = rich.mediaName;
     message.mediaSize = rich.mediaSize;
     message.mediaDurationMs = rich.mediaDurationMs;
+    message.pollId = rich.hasPoll ? rich.poll.pollId : QString();
     message.senderLogin = senderLogin;
     message.replyToClientMsgId =
         envelope.header.value(QStringLiteral("reply_to")).toString();
@@ -1817,11 +2475,31 @@ void MessageService::handleGroupIncoming(const net::Envelope &envelope,
     const QString groupIdCopy = groupId;
     const bool channelCopy = channelChat;
     const QVector<MediaWire> wires = rich.wires;
+    const bool hasPoll = rich.hasPoll;
+    const PollBody pollDef = rich.poll;
 
     auto future = m_storage->submit([message, groupIdCopy, channelCopy,
-                                     wires](storage::Database &db) {
+                                     wires, hasPoll, pollDef](storage::Database &db) {
         for (const MediaWire &wire : wires) {
             if (!mediaFromWire(db, wire, message.chatId, message.kind).has_value()) {
+                return -1;
+            }
+        }
+        if (hasPoll) {
+            Poll poll;
+            poll.pollId = pollDef.pollId;
+            poll.chatId = message.chatId;
+            poll.messageClientMsgId = message.clientMsgId;
+            poll.question = pollDef.question;
+            poll.options = pollDef.options;
+            poll.anonymous = pollDef.anonymous;
+            poll.multiple = pollDef.multiple;
+            poll.quiz = pollDef.quiz;
+            poll.allowChange = pollDef.allowChange;
+            poll.correctOption = pollDef.correctOption;
+            poll.createdBy = message.senderLogin;
+            poll.createdAt = message.serverTs > 0 ? message.serverTs : message.localTs;
+            if (storage::PollsRepo(db).upsert(poll).isError()) {
                 return -1;
             }
         }
@@ -1872,6 +2550,9 @@ void MessageService::handleGroupIncoming(const net::Envelope &envelope,
         }
         if (stored == 1) {
             emit messageAdded(message);
+            if (!message.pollId.isEmpty()) {
+                emit pollsChanged(message.chatId, message.pollId);
+            }
         }
     });
 }
@@ -1910,17 +2591,24 @@ void MessageService::handleDelivered(const QString &clientMsgId, const QString &
 
 void MessageService::handleReadReceipt(const QString &chatId, const QStringList &clientMsgIds)
 {
-    Q_UNUSED(chatId);
     if (!m_storage) {
         return;
     }
-    auto future = m_storage->submit([clientMsgIds](storage::Database &db) {
+    auto future = m_storage->submit([chatId, clientMsgIds](storage::Database &db) {
         QVector<Message> changed;
         for (const QString &clientMsgId : clientMsgIds) {
             Advance advance = advanceMessage(db, clientMsgId, MessageState::Read, 0);
             if (advance.changed) {
                 changed.append(advance.message);
             }
+        }
+        // §39.2: our outgoing messages start their countdown when the peer
+        // confirms it has read them.
+        auto chat = storage::ChatsRepo(db).get(chatId);
+        if (chat.isOk() && chat.value().has_value()
+            && chat.value()->expiresAfterMs > 0) {
+            storage::MessagesRepo(db).applyReadExpiry(
+                clientMsgIds, chat.value()->expiresAfterMs, Clock::nowMs());
         }
         return changed;
     });

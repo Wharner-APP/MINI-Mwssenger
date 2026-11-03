@@ -18,6 +18,9 @@ struct ChatItem
     bool muted = false;
     bool online = false;
     bool archived = false;
+    // §29.14: the row shows a small "BOT" badge and the chat header says the
+    // conversation is not end-to-end encrypted.
+    bool isBot = false;
 };
 
 class ChatListModel : public QAbstractListModel
@@ -35,6 +38,7 @@ public:
         MutedRole,
         OnlineRole,
         InitialsRole,
+        BotRole,
     };
 
     explicit ChatListModel(QObject *parent = nullptr);

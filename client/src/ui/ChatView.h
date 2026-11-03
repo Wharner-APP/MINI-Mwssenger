@@ -2,6 +2,8 @@
 
 #include "domain/Chat.h"
 #include "domain/Message.h"
+#include "domain/Poll.h"
+#include "domain/Reaction.h"
 
 #include <QVector>
 #include <QWidget>
@@ -47,10 +49,14 @@ public:
     [[nodiscard]] QListView *messageView() const { return m_messages; }
     [[nodiscard]] MessageListModel *messageModel() const { return m_model; }
     [[nodiscard]] QToolButton *infoButton() const { return m_info; }
+    [[nodiscard]] QToolButton *disappearingButton() const { return m_timerButton; }
     [[nodiscard]] QString chatId() const { return m_chatId; }
 
     void setChatTitle(const QString &title);
     void setChatSubtitle(const QString &subtitle);
+    // §39: icon in the header plus the "Disappearing messages: 1 day" line.
+    void setDisappearingAfter(qint64 milliseconds);
+    [[nodiscard]] qint64 disappearingAfter() const { return m_disappearingMs; }
     void setChat(const Chat &chat);
     // Channels gate the composer by publish permission (§43.2); direct and
     // group chats keep it enabled whenever a chat is selected.
@@ -64,6 +70,12 @@ public:
     void appendMessage(const Message &message);
     void updateMessage(const Message &message);
     void removeMessage(const QString &clientMsgId);
+
+    // §38.1 / §38.3: chips and poll tallies for the visible history.
+    void setSelfLogin(const QString &login);
+    void setReactions(const QString &chatId, const QVector<Reaction> &reactions);
+    void setPollResult(const PollResult &result);
+    void clearPolls();
 
     void setDraft(const QString &text);
     [[nodiscard]] QString draft() const;
@@ -139,8 +151,17 @@ signals:
     void stickerInstallRequested();
     void stickerRemoveRequested(const QString &packId);
     void recentEmojiChanged(const QStringList &characters);
+    // §38.3: composer poll button (same dialog as Ctrl+Shift+P).
+    void pollRequested();
     // Double click / single click on a photo, video, file or album bubble.
     void mediaActivated(const QString &clientMsgId);
+    // §38.1
+    void reactionToggled(const QString &clientMsgId, const QString &emoji);
+    // §38.3
+    void pollVoteRequested(const QString &pollId, int optionIndex);
+    void pollCloseRequested(const QString &pollId);
+    // §39.1
+    void disappearingChanged(qint64 milliseconds);
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -166,6 +187,7 @@ private:
     QLabel *m_title = nullptr;
     QLabel *m_subtitle = nullptr;
     QToolButton *m_info = nullptr;
+    QToolButton *m_timerButton = nullptr;
     EmptyState *m_empty = nullptr;
     QListView *m_messages = nullptr;
     MessageListModel *m_model = nullptr;
@@ -194,6 +216,8 @@ private:
     QFrame *m_multiBar = nullptr;
     QLabel *m_multiLabel = nullptr;
     bool m_multiSelect = false;
+    qint64 m_disappearingMs = 0;
+    QString m_baseSubtitle;
 };
 
 } // namespace mini

@@ -40,6 +40,8 @@ QVariant ChatListModel::data(const QModelIndex &index, int role) const
         return item.online;
     case InitialsRole:
         return item.initials;
+    case BotRole:
+        return item.isBot;
     case Qt::DisplayRole:
         return item.title;
     default:

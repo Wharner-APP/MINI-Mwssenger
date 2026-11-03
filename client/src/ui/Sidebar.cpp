@@ -1,6 +1,7 @@
 #include "ui/Sidebar.h"
 
 #include "ui/ChatList.h"
+#include "ui/FolderRail.h"
 #include "ui/Theme.h"
 #include "ui/widgets/Icons.h"
 
@@ -39,6 +40,8 @@ Sidebar::Sidebar(QWidget *parent) : QWidget(parent)
     QAction *joinGroupAction = newMenu->addAction(tr("Join by invite link"));
     QAction *newChannelAction = newMenu->addAction(tr("New channel"));
     QAction *joinChannelAction = newMenu->addAction(tr("Join channel by invite link"));
+    newMenu->addSeparator();
+    QAction *botsAction = newMenu->addAction(tr("My bots"));
     m_newChat->setMenu(newMenu);
     m_newChat->setPopupMode(QToolButton::InstantPopup);
     connect(newChatAction, &QAction::triggered, this, &Sidebar::newChatRequested);
@@ -46,6 +49,7 @@ Sidebar::Sidebar(QWidget *parent) : QWidget(parent)
     connect(newChannelAction, &QAction::triggered, this, &Sidebar::newChannelRequested);
     connect(joinGroupAction, &QAction::triggered, this, &Sidebar::joinGroupRequested);
     connect(joinChannelAction, &QAction::triggered, this, &Sidebar::joinChannelRequested);
+    connect(botsAction, &QAction::triggered, this, &Sidebar::botsRequested);
 
     auto *header = new QHBoxLayout();
     header->setContentsMargins(0, 0, 0, 0);
@@ -62,12 +66,14 @@ Sidebar::Sidebar(QWidget *parent) : QWidget(parent)
     m_search->addAction(m_searchAction, QLineEdit::LeadingPosition);
 
     m_chatList = new ChatList(this);
+    m_folders = new FolderRail(this);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(12, 12, 12, 0);
     layout->setSpacing(10);
     layout->addLayout(header);
     layout->addWidget(m_search);
+    layout->addWidget(m_folders);
     layout->addWidget(m_chatList, 1);
 
     connect(m_search, &QLineEdit::textChanged, m_chatList, &ChatList::setFilter);

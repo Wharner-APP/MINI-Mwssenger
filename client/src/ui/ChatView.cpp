@@ -2,7 +2,9 @@
 
 #include "services/MediaService.h"
 #include "services/StickerService.h"
+#include "domain/Disappearing.h"
 #include "ui/Composer.h"
+#include "ui/EmojiPanel.h"
 #include "ui/Markdown.h"
 #include "ui/MarkdownPainter.h"
 #include "ui/MessageBubble.h"
@@ -13,6 +15,8 @@
 #include <QAction>
 #include <QClipboard>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileInfo>
@@ -26,6 +30,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QSet>
 #include <QShortcut>
 #include <QStackedLayout>
@@ -61,6 +66,32 @@ ChatView::ChatView(QWidget *parent) : QWidget(parent)
     auto *headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(20, 10, 20, 10);
     headerLayout->addLayout(headerText, 1);
+
+    m_timerButton = new QToolButton(header);
+    m_timerButton->setObjectName(QStringLiteral("chatDisappearingButton"));
+    m_timerButton->setFixedSize(32, 32);
+    m_timerButton->setIconSize(QSize(18, 18));
+    m_timerButton->setCursor(Qt::PointingHandCursor);
+    m_timerButton->setToolTip(tr("Disappearing messages"));
+    m_timerButton->setAccessibleName(tr("Disappearing messages"));
+    m_timerButton->setIcon(Icons::icon(QStringLiteral("clock"),
+                                       Theme::instance().tokens().textSecondary, 18));
+    m_timerButton->setVisible(false);
+    headerLayout->addWidget(m_timerButton);
+    connect(m_timerButton, &QToolButton::clicked, this, [this] {
+        QMenu menu(this);
+        menu.setObjectName(QStringLiteral("disappearingMenu"));
+        const QVector<qint64> values = disappearing::values();
+        for (const qint64 value : values) {
+            QAction *action = menu.addAction(disappearing::label(value));
+            action->setCheckable(true);
+            action->setChecked(value == m_disappearingMs);
+            connect(action, &QAction::triggered, this, [this, value] {
+                emit disappearingChanged(value);
+            });
+        }
+        menu.exec(m_timerButton->mapToGlobal(QPoint(0, m_timerButton->height())));
+    });
 
     m_info = new QToolButton(header);
     m_info->setObjectName(QStringLiteral("chatInfoButton"));
@@ -244,6 +275,7 @@ ChatView::ChatView(QWidget *parent) : QWidget(parent)
     connect(m_composer, &Composer::filesDropped, this, &ChatView::filesDropped);
     connect(m_composer, &Composer::stickerRequested, this, &ChatView::stickerRequested);
     connect(m_composer, &Composer::gifRequested, this, &ChatView::gifRequested);
+    connect(m_composer, &Composer::pollRequested, this, &ChatView::pollRequested);
     connect(m_composer, &Composer::stickerInstallRequested, this,
             &ChatView::stickerInstallRequested);
     connect(m_composer, &Composer::stickerRemoveRequested, this,
@@ -295,7 +327,24 @@ void ChatView::setChatTitle(const QString &title)
 
 void ChatView::setChatSubtitle(const QString &subtitle)
 {
-    m_subtitle->setText(subtitle);
+    m_baseSubtitle = subtitle;
+    if (m_disappearingMs > 0) {
+        m_subtitle->setText(
+            subtitle + QStringLiteral(" · ")
+            + tr("Disappearing messages: %1").arg(disappearing::label(m_disappearingMs)));
+    } else {
+        m_subtitle->setText(subtitle);
+    }
+}
+
+void ChatView::setDisappearingAfter(qint64 milliseconds)
+{
+    m_disappearingMs = milliseconds;
+    m_timerButton->setToolTip(
+        milliseconds > 0
+            ? tr("Disappearing messages: %1").arg(disappearing::label(milliseconds))
+            : tr("Disappearing messages: off"));
+    setChatSubtitle(m_baseSubtitle);
 }
 
 void ChatView::setChat(const Chat &chat)
@@ -311,12 +360,21 @@ void ChatView::setChat(const Chat &chat)
     m_peerLastActiveAt = 0;
     const bool isGroup = chat.kind == QLatin1String("group");
     const bool isChannel = chat.kind == QLatin1String("channel");
+    // §29.14: a bot chat is labelled "bot" and says it is not end-to-end
+    // encrypted. The flag survives restarts through the `_bot` login suffix.
+    const bool isBot = chat.isBot
+        || (!isGroup && !isChannel
+            && chat.peerLogin.toLower().endsWith(QLatin1String("_bot")));
     m_title->setText(chat.title.isEmpty() ? chat.peerLogin : chat.title);
-    m_subtitle->setText(isChannel ? tr("Channel")
-                                  : (isGroup ? tr("Group")
-                                             : (chat.peerLogin.isEmpty()
-                                                    ? tr("Not connected")
-                                                    : chat.peerLogin)));
+    setChatSubtitle(isChannel ? tr("Channel")
+                              : (isGroup ? tr("Group")
+                                         : (isBot
+                                                ? tr("Bot · messages are not end-to-end encrypted")
+                                                : (chat.peerLogin.isEmpty()
+                                                       ? tr("Not connected")
+                                                       : chat.peerLogin))));
+    m_timerButton->setVisible(!chat.chatId.isEmpty());
+    setDisappearingAfter(chat.expiresAfterMs);
     m_info->setVisible((isGroup || isChannel) && !chat.chatId.isEmpty());
     // A subscriber cannot post; MainWindow enables the composer once the
     // channel role and permissions are known.
@@ -348,6 +406,9 @@ void ChatView::clearChat()
     m_title->setText(tr("No chat selected"));
     m_subtitle->setText(tr("Not connected"));
     m_info->setVisible(false);
+    m_timerButton->setVisible(false);
+    m_disappearingMs = 0;
+    m_baseSubtitle = tr("Not connected");
     m_model->setMessages({});
     m_composer->setText(QString());
     m_composer->setComposerEnabled(false);
@@ -391,6 +452,26 @@ void ChatView::setMessages(const QVector<Message> &messages)
         m_messages->scrollToBottom();
     }
     refreshEmptyState();
+}
+
+void ChatView::setSelfLogin(const QString &login)
+{
+    m_model->setSelfLogin(login);
+}
+
+void ChatView::setReactions(const QString &chatId, const QVector<Reaction> &reactions)
+{
+    m_model->setReactions(chatId, reactions);
+}
+
+void ChatView::setPollResult(const PollResult &result)
+{
+    m_model->setPollResult(result);
+}
+
+void ChatView::clearPolls()
+{
+    m_model->clearPolls();
 }
 
 void ChatView::appendMessage(const Message &message)
@@ -532,6 +613,41 @@ bool ChatView::eventFilter(QObject *watched, QEvent *event)
             if (!files.isEmpty()) {
                 drop->acceptProposedAction();
                 emit filesDropped(files);
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseButtonRelease: {
+            // §38.1 / §38.3: chip and poll-option clicks are handled before
+            // the media double-click so a vote never opens a viewer.
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() != Qt::LeftButton) {
+                break;
+            }
+            const QModelIndex index = m_messages->indexAt(mouse->pos());
+            if (!index.isValid()) {
+                break;
+            }
+            QStyleOptionViewItem option;
+            option.initFrom(m_messages);
+            option.rect = m_messages->visualRect(index);
+            option.widget = m_messages;
+            const QString clientMsgId =
+                index.data(MessageListModel::ClientMsgIdRole).toString();
+            QString emoji;
+            if (reactionChipAt(option, index, mouse->pos(), &emoji)) {
+                emit reactionToggled(clientMsgId, emoji);
+                return true;
+            }
+            int optionIndex = -1;
+            if (pollOptionAt(option, index, mouse->pos(), &optionIndex)) {
+                emit pollVoteRequested(index.data(MessageListModel::PollIdRole).toString(),
+                                       optionIndex);
+                return true;
+            }
+            if (pollCloseAt(option, index, mouse->pos())) {
+                emit pollCloseRequested(
+                    index.data(MessageListModel::PollIdRole).toString());
                 return true;
             }
             break;
@@ -871,6 +987,33 @@ void ChatView::showMessageMenu(const QPoint &pos)
     forward->setObjectName(QStringLiteral("messageForwardAction"));
     QAction *copy = menu.addAction(tr("Copy"));
     copy->setObjectName(QStringLiteral("messageCopyAction"));
+    // §38.1: the twelve defaults live inside the menu, "More…" opens the
+    // full emoji panel.
+    QMenu *react = menu.addMenu(tr("React"));
+    react->setObjectName(QStringLiteral("messageReactMenu"));
+    for (const QString &emoji : defaultReactions()) {
+        QAction *action = react->addAction(emoji);
+        connect(action, &QAction::triggered, this, [this, clientMsgId, emoji] {
+            emit reactionToggled(clientMsgId, emoji);
+        });
+    }
+    QAction *moreReactions = react->addAction(tr("More…"));
+    moreReactions->setObjectName(QStringLiteral("messageReactMoreAction"));
+    connect(moreReactions, &QAction::triggered, this, [this, clientMsgId] {
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Reactions"));
+        auto *panel = new EmojiPanel(&dialog);
+        auto *layout = new QVBoxLayout(&dialog);
+        layout->setContentsMargins(8, 8, 8, 8);
+        layout->addWidget(panel);
+        connect(panel, &EmojiPanel::emojiSelected, this,
+                [this, &dialog, clientMsgId](const QString &emoji) {
+                    emit reactionToggled(clientMsgId, emoji);
+                    dialog.accept();
+                });
+        dialog.resize(420, 360);
+        dialog.exec();
+    });
     QAction *pin = menu.addAction(pinned ? tr("Unpin") : tr("Pin"));
     pin->setObjectName(QStringLiteral("messagePinAction"));
     QAction *select = menu.addAction(tr("Select"));

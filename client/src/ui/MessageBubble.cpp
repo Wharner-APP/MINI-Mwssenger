@@ -14,6 +14,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QVariantMap>
 
 #include <algorithm>
 
@@ -33,6 +34,12 @@ constexpr int kGifWidth = 240;
 constexpr int kGifHeight = 144;
 constexpr int kAlbumWidth = 280;
 constexpr int kAlbumGap = 2;
+constexpr int kReactionChipHeight = 22;
+constexpr int kReactionGap = 4;
+constexpr int kPollWidth = 340;
+constexpr int kPollOptionHeight = 34;
+constexpr int kPollOptionGap = 4;
+constexpr int kPollQuestionLines = 2;
 
 QFont messageFont()
 {
@@ -201,6 +208,98 @@ QColor statusColor(MessageState state, const Tokens &tokens)
     }
 }
 
+struct ReactionChipBox
+{
+    QRect rect;
+    QString emoji;
+};
+
+// §38.1: chips are laid out left-to-right under the bubble and wrap to a new
+// row when they no longer fit. Both paint() and the hit test use this helper.
+QVector<ReactionChipBox> reactionChips(const QStyleOptionViewItem &option,
+                                       const QModelIndex &index, int left, int top,
+                                       int maxWidth)
+{
+    QVector<ReactionChipBox> chips;
+    const QVariantList reactions = index.data(MessageListModel::ReactionsRole).toList();
+    if (reactions.isEmpty()) {
+        return chips;
+    }
+    QFont emojiFont = Theme::instance().appFont();
+    emojiFont.setPixelSize(Theme::instance().scaledPx(13));
+    const QFontMetrics emojiMetrics(emojiFont);
+    const QFontMetrics meta(metaFont());
+    int x = left;
+    int y = top;
+    for (const QVariant &value : reactions) {
+        const QVariantMap chip = value.toMap();
+        const QString emoji = chip.value(QStringLiteral("emoji")).toString();
+        const int count = chip.value(QStringLiteral("count")).toInt();
+        const int width = emojiMetrics.horizontalAdvance(emoji)
+            + meta.horizontalAdvance(QString::number(count)) + 20;
+        if (x > left && x + width > left + maxWidth) {
+            x = left;
+            y += kReactionChipHeight + kReactionGap;
+        }
+        ReactionChipBox box;
+        box.rect = QRect(x, y, width, kReactionChipHeight);
+        box.emoji = emoji;
+        chips.append(box);
+        x += width + kReactionGap;
+    }
+    return chips;
+}
+
+int reactionRowsHeight(const QVector<ReactionChipBox> &chips)
+{
+    if (chips.isEmpty()) {
+        return 0;
+    }
+    int bottom = 0;
+    for (const ReactionChipBox &chip : chips) {
+        bottom = qMax(bottom, chip.rect.bottom());
+    }
+    return bottom - chips.first().rect.top() + 1;
+}
+
+void paintReactionChips(QPainter *painter, const QVector<ReactionChipBox> &chips,
+                        const QVariantList &reactions, const Tokens &tokens)
+{
+    QHash<QString, QPair<int, bool>> values;
+    for (const QVariant &value : reactions) {
+        const QVariantMap chip = value.toMap();
+        values.insert(chip.value(QStringLiteral("emoji")).toString(),
+                      {chip.value(QStringLiteral("count")).toInt(),
+                       chip.value(QStringLiteral("mine")).toBool()});
+    }
+    QFont emojiFont = Theme::instance().appFont();
+    emojiFont.setPixelSize(Theme::instance().scaledPx(13));
+    for (const ReactionChipBox &chip : chips) {
+        const auto info = values.value(chip.emoji);
+        painter->setPen(Qt::NoPen);
+        if (info.second) {
+            painter->setBrush(QColor(tokens.accent.red(), tokens.accent.green(),
+                                     tokens.accent.blue(), 55));
+        } else {
+            painter->setBrush(tokens.bgInput);
+        }
+        painter->drawRoundedRect(chip.rect, 11, 11);
+        if (info.second) {
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(tokens.accent, 1));
+            painter->drawRoundedRect(chip.rect.adjusted(1, 1, -1, -1), 10, 10);
+        }
+        painter->setPen(tokens.textPrimary);
+        painter->setFont(emojiFont);
+        painter->drawText(chip.rect.adjusted(8, 0, -6, 0),
+                          Qt::AlignLeft | Qt::AlignVCenter, chip.emoji);
+        painter->setFont(metaFont());
+        painter->drawText(chip.rect.adjusted(0, 0, -7, 0),
+                          Qt::AlignRight | Qt::AlignVCenter,
+                          QString::number(info.first));
+    }
+}
+
 struct BubbleLayout
 {
     int width = 0;
@@ -208,7 +307,12 @@ struct BubbleLayout
     int mediaHeight = 0;
     int captionHeight = 0;
     int forwardHeight = 0;
+    int reactionHeight = 0;
+    int pollOptions = 0;
     bool hasMedia = false;
+    bool hasReactions = false;
+    bool isPoll = false;
+    bool isSystem = false;
     MediaKind kind = MediaKind::Text;
 };
 
@@ -217,7 +321,16 @@ BubbleLayout measureBubble(const QStyleOptionViewItem &option, const QModelIndex
     BubbleLayout layout;
     layout.kind = static_cast<MediaKind>(index.data(MessageListModel::KindRole).toInt());
     layout.hasMedia = layout.kind != MediaKind::Text;
+    layout.isSystem = index.data(MessageListModel::SystemRole).toBool();
+    const QString pollId = index.data(MessageListModel::PollIdRole).toString();
+    layout.isPoll = !pollId.isEmpty();
     const QString body = index.data(MessageListModel::BodyRole).toString();
+    if (layout.isSystem) {
+        // §38.4: a centred grey line without a bubble.
+        layout.width = bubbleMaxWidth(option);
+        layout.height = 32;
+        return layout;
+    }
     const QString replyId = index.data(MessageListModel::ReplyRole).toString();
     const QString forwarded = index.data(MessageListModel::ForwardedRole).toString();
     if (!forwarded.isEmpty()) {
@@ -230,7 +343,9 @@ BubbleLayout measureBubble(const QStyleOptionViewItem &option, const QModelIndex
 
     const QFontMetrics metrics(messageFont());
     const int maxBubble = bubbleMaxWidth(option);
-    if (layout.hasMedia) {
+    if (layout.isPoll) {
+        layout.width = qMin(maxBubble, kPollWidth + kPadX * 2);
+    } else if (layout.hasMedia) {
         switch (layout.kind) {
         case MediaKind::Sticker:
             layout.width = qMin(maxBubble, kStickerSize + kPadX * 2);
@@ -267,20 +382,78 @@ BubbleLayout measureBubble(const QStyleOptionViewItem &option, const QModelIndex
     } else if (layout.kind == MediaKind::Album) {
         layout.mediaHeight = albumHeight(
             index.data(MessageListModel::AlbumIdsRole).toStringList().size());
+    } else if (layout.isPoll) {
+        layout.pollOptions =
+            index.data(MessageListModel::PollOptionsRole).toStringList().size();
+        // Option rows plus a footer line with the vote total and Close.
+        layout.mediaHeight =
+            layout.pollOptions * (kPollOptionHeight + kPollOptionGap) + 22;
     }
     int height = kPadY * 2 + kMetaHeight + layout.mediaHeight + layout.captionHeight
         + layout.forwardHeight;
     if (!forwarded.isEmpty()) {
         height += 2;
     }
-    if (layout.hasMedia && layout.captionHeight > 0) {
+    if ((layout.hasMedia || layout.isPoll) && layout.captionHeight > 0) {
         height += 6;
     }
     if (!reply.isEmpty()) {
         height += kReplyHeight;
     }
+    // §38.1: chips add their own band below the bubble.
+    const int chipWidth = (option.widget ? option.widget->width() : 640) - 24;
+    const QVector<ReactionChipBox> chips = reactionChips(option, index, 0, 0, chipWidth);
+    layout.hasReactions = !chips.isEmpty();
+    layout.reactionHeight = reactionRowsHeight(chips) + (chips.isEmpty() ? 0 : 4);
+    height += layout.reactionHeight;
     layout.height = qMax(38, height);
     return layout;
+}
+
+struct PollGeometry
+{
+    QRect bubble;
+    QRect question;
+    QVector<QRect> options;
+    QRect footer;
+    QRect close;
+};
+
+PollGeometry pollGeometry(const QStyleOptionViewItem &option, const QModelIndex &index,
+                          const BubbleLayout &layout)
+{
+    PollGeometry geometry;
+    const bool outgoing = index.data(MessageListModel::OutgoingRole).toBool();
+    const int left = outgoing ? option.rect.right() - layout.width - 12
+                              : option.rect.left() + 12;
+    const int top = option.rect.top() + 3;
+    geometry.bubble = QRect(left, top, layout.width,
+                            layout.height - 6 - layout.reactionHeight);
+    const int width = geometry.bubble.width() - kPadX * 2;
+    int y = geometry.bubble.top() + kPadY;
+    if (!index.data(MessageListModel::ReplyRole).toString().isEmpty()) {
+        y += kReplyHeight;
+    }
+    const QString forwarded = index.data(MessageListModel::ForwardedRole).toString();
+    if (!forwarded.isEmpty()) {
+        y += layout.forwardHeight + 2;
+    }
+    geometry.question = QRect(geometry.bubble.left() + kPadX, y, width,
+                              layout.captionHeight + 2);
+    y = geometry.question.bottom() + 6;
+    const int count =
+        index.data(MessageListModel::PollOptionsRole).toStringList().size();
+    for (int i = 0; i < count; ++i) {
+        geometry.options.append(QRect(geometry.bubble.left() + kPadX, y, width,
+                                      kPollOptionHeight));
+        y += kPollOptionHeight + kPollOptionGap;
+    }
+    const int metaTop = geometry.bubble.bottom() - kPadY - kMetaHeight;
+    geometry.footer = QRect(geometry.bubble.left() + kPadX, metaTop - 20,
+                            width, 18);
+    geometry.close = QRect(geometry.footer.right() - 52, geometry.footer.top(),
+                           52, geometry.footer.height());
+    return geometry;
 }
 
 void drawPixmapCover(QPainter *painter, const QRect &target, const QPixmap &pixmap)
@@ -397,6 +570,58 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
             || message.clientMsgId == m_highlighted;
     case SearchQueryRole:
         return m_searchQuery;
+    case ReactionsRole:
+        return m_reactions.value(message.clientMsgId);
+    case PollIdRole:
+        return message.pollId;
+    case PollQuestionRole:
+        return message.body;
+    case PollOptionsRole: {
+        const auto it = m_polls.constFind(message.pollId);
+        return it == m_polls.constEnd() ? QStringList() : it->poll.options;
+    }
+    case PollCountsRole: {
+        const auto it = m_polls.constFind(message.pollId);
+        QVariantList counts;
+        if (it != m_polls.constEnd()) {
+            for (const int count : it->counts) {
+                counts.append(count);
+            }
+        }
+        return counts;
+    }
+    case PollMyChoicesRole: {
+        const auto it = m_polls.constFind(message.pollId);
+        QVariantList choices;
+        if (it != m_polls.constEnd()) {
+            for (const int choice : it->myChoices) {
+                choices.append(choice);
+            }
+        }
+        return choices;
+    }
+    case PollFlagsRole: {
+        const auto it = m_polls.constFind(message.pollId);
+        int flags = 0;
+        if (it != m_polls.constEnd()) {
+            flags |= it->poll.multiple ? 0x1 : 0;
+            flags |= it->poll.anonymous ? 0x2 : 0;
+            flags |= it->poll.quiz ? 0x4 : 0;
+            flags |= it->poll.closed ? 0x8 : 0;
+            flags |= it->canClose ? 0x10 : 0;
+        }
+        return flags;
+    }
+    case PollCorrectRole: {
+        const auto it = m_polls.constFind(message.pollId);
+        return it == m_polls.constEnd() ? -1 : it->poll.correctOption;
+    }
+    case PollTotalRole: {
+        const auto it = m_polls.constFind(message.pollId);
+        return it == m_polls.constEnd() ? 0 : it->totalVoters;
+    }
+    case SystemRole:
+        return message.system;
     case Qt::DisplayRole:
         return message.body;
     case Qt::ToolTipRole:
@@ -601,6 +826,74 @@ void MessageListModel::setHighlighted(const QString &clientMsgId)
     }
 }
 
+void MessageListModel::setReactions(const QString &chatId,
+                                    const QVector<Reaction> &reactions)
+{
+    Q_UNUSED(chatId);
+    QHash<QString, QVariantList> grouped;
+    QHash<QString, QHash<QString, int>> counts;
+    QHash<QString, QHash<QString, bool>> mine;
+    const QString self = m_selfLogin;
+    for (const Reaction &reaction : reactions) {
+        counts[reaction.clientMsgId][reaction.emoji] += 1;
+        if (reaction.senderLogin.compare(self, Qt::CaseInsensitive) == 0) {
+            mine[reaction.clientMsgId][reaction.emoji] = true;
+        }
+        grouped[reaction.clientMsgId]; // ensure the key exists
+    }
+    for (auto it = counts.constBegin(); it != counts.constEnd(); ++it) {
+        QVariantList chips;
+        const QHash<QString, int> &byEmoji = it.value();
+        for (auto emoji = byEmoji.cbegin(); emoji != byEmoji.cend(); ++emoji) {
+            QVariantMap chip;
+            chip.insert(QStringLiteral("emoji"), emoji.key());
+            chip.insert(QStringLiteral("count"), emoji.value());
+            chip.insert(QStringLiteral("mine"),
+                        mine.value(it.key()).value(emoji.key(), false));
+            chips.append(chip);
+        }
+        grouped.insert(it.key(), chips);
+    }
+    if (grouped == m_reactions) {
+        return;
+    }
+    const QHash<QString, QVariantList> previous = m_reactions;
+    m_reactions = grouped;
+    // Repaint only rows whose chip band changed.
+    for (int row = 0; row < m_messages.size(); ++row) {
+        const QString id = m_messages.at(row).clientMsgId;
+        if (previous.value(id) != m_reactions.value(id)) {
+            const QModelIndex changed = index(row, 0);
+            emit dataChanged(changed, changed);
+        }
+    }
+}
+
+void MessageListModel::setPollResult(const PollResult &result)
+{
+    if (result.poll.pollId.isEmpty()) {
+        return;
+    }
+    m_polls.insert(result.poll.pollId, result);
+    for (int row = 0; row < m_messages.size(); ++row) {
+        if (m_messages.at(row).pollId == result.poll.pollId) {
+            const QModelIndex changed = index(row, 0);
+            emit dataChanged(changed, changed);
+        }
+    }
+}
+
+void MessageListModel::clearPolls()
+{
+    if (m_polls.isEmpty()) {
+        return;
+    }
+    m_polls.clear();
+    if (!m_messages.isEmpty()) {
+        emit dataChanged(index(0, 0), index(m_messages.size() - 1, 0));
+    }
+}
+
 void MessageListModel::insertSorted(const Message &message)
 {
     int row = m_messages.size();
@@ -652,10 +945,20 @@ void MessageBubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
 
+    if (layout.isSystem) {
+        // §38.4: centred grey line, no bubble and no actions.
+        painter->setPen(tokens.textTertiary);
+        painter->setFont(metaFont());
+        painter->drawText(option.rect.adjusted(12, 0, -12, 0), Qt::AlignCenter, body);
+        painter->restore();
+        return;
+    }
+
     const int left = outgoing ? option.rect.right() - layout.width - 12
                               : option.rect.left() + 12;
     const int top = option.rect.top() + 3;
-    const QRect bubbleRect(left, top, layout.width, layout.height - 6);
+    const QRect bubbleRect(left, top, layout.width,
+                           layout.height - 6 - layout.reactionHeight);
 
     painter->setPen(Qt::NoPen);
     if (layout.kind == MediaKind::Sticker) {
@@ -668,6 +971,104 @@ void MessageBubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem 
         painter->setBrush(Qt::NoBrush);
         painter->setPen(QPen(tokens.accent, 2));
         painter->drawRoundedRect(bubbleRect.adjusted(1, 1, -1, -1), 13, 13);
+    }
+
+    if (layout.isPoll) {
+        const PollGeometry geometry = pollGeometry(option, index, layout);
+        const QStringList options =
+            index.data(MessageListModel::PollOptionsRole).toStringList();
+        const QVariantList counts = index.data(MessageListModel::PollCountsRole).toList();
+        const QVariantList mine = index.data(MessageListModel::PollMyChoicesRole).toList();
+        const int flags = index.data(MessageListModel::PollFlagsRole).toInt();
+        const int correct = index.data(MessageListModel::PollCorrectRole).toInt();
+        const int total = index.data(MessageListModel::PollTotalRole).toInt();
+        const bool multiple = (flags & 0x1) != 0;
+        const bool anonymous = (flags & 0x2) != 0;
+        const bool quiz = (flags & 0x4) != 0;
+        const bool closed = (flags & 0x8) != 0;
+        const bool canClose = (flags & 0x10) != 0;
+        const bool reveal = quiz && (closed || !mine.isEmpty());
+
+        painter->setPen(tokens.textPrimary);
+        painter->setFont(messageFont());
+        painter->drawText(geometry.question, Qt::TextWordWrap | Qt::AlignLeft
+                                                | Qt::AlignTop, body);
+
+        for (int i = 0; i < options.size() && i < geometry.options.size(); ++i) {
+            const QRect row = geometry.options.at(i);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(tokens.bgInput);
+            painter->drawRoundedRect(row, 8, 8);
+            const int count = i < counts.size() ? counts.at(i).toInt() : 0;
+            const int percent = total > 0 ? count * 100 / total : 0;
+            if (percent > 0) {
+                painter->setBrush(QColor(tokens.accent.red(), tokens.accent.green(),
+                                         tokens.accent.blue(), 60));
+                painter->drawRoundedRect(
+                    QRect(row.left(), row.top(), qMax(6, row.width() * percent / 100),
+                          row.height()),
+                    8, 8);
+            }
+            const bool myChoice = mine.contains(i);
+            if (myChoice) {
+                painter->setBrush(Qt::NoBrush);
+                painter->setPen(QPen(tokens.accent, 2));
+                painter->drawRoundedRect(row.adjusted(1, 1, -1, -1), 7, 7);
+            } else if (reveal && i == correct) {
+                painter->setBrush(Qt::NoBrush);
+                painter->setPen(QPen(tokens.online, 2));
+                painter->drawRoundedRect(row.adjusted(1, 1, -1, -1), 7, 7);
+            }
+            painter->setPen(tokens.textPrimary);
+            painter->setFont(messageFont());
+            painter->drawText(row.adjusted(10, 0, -54, 0),
+                              Qt::AlignLeft | Qt::AlignVCenter,
+                              painter->fontMetrics().elidedText(options.at(i),
+                                                               Qt::ElideRight,
+                                                               row.width() - 64));
+            painter->setPen(tokens.textSecondary);
+            painter->setFont(metaFont());
+            painter->drawText(row.adjusted(0, 0, -10, 0),
+                              Qt::AlignRight | Qt::AlignVCenter,
+                              QStringLiteral("%1%").arg(percent));
+        }
+
+        // Footer: total votes plus the poll flags.
+        QStringList footer;
+        footer.append(tr("%n vote(s)", "", total));
+        if (anonymous) {
+            footer.append(tr("Anonymous"));
+        }
+        if (multiple) {
+            footer.append(tr("Multiple answers"));
+        }
+        if (closed) {
+            footer.append(tr("Closed"));
+        }
+        painter->setPen(tokens.textTertiary);
+        painter->setFont(metaFont());
+        painter->drawText(geometry.footer.adjusted(0, 0, canClose ? -56 : 0, 0),
+                          Qt::AlignLeft | Qt::AlignVCenter, footer.join(QStringLiteral(" · ")));
+        if (canClose) {
+            painter->setPen(tokens.accent);
+            painter->drawText(geometry.close, Qt::AlignRight | Qt::AlignVCenter,
+                              tr("Close"));
+        }
+
+        const QRect metaRect(bubbleRect.left() + kPadX,
+                             bubbleRect.bottom() - kPadY - kMetaHeight,
+                             bubbleRect.width() - kPadX * 2, kMetaHeight);
+        painter->setFont(metaFont());
+        painter->setPen(tokens.textTertiary);
+        painter->drawText(metaRect, Qt::AlignRight | Qt::AlignVCenter, formatTime(ts));
+
+        const QVector<ReactionChipBox> chips =
+            reactionChips(option, index, bubbleRect.left(), bubbleRect.bottom() + 6,
+                          option.widget ? option.widget->width() - 24 : 616);
+        paintReactionChips(painter, chips,
+                           index.data(MessageListModel::ReactionsRole).toList(), tokens);
+        painter->restore();
+        return;
     }
 
     int textTop = bubbleRect.top() + kPadY;
@@ -911,7 +1312,72 @@ void MessageBubbleDelegate::paint(QPainter *painter, const QStyleOptionViewItem 
                             metaRect.center().y() - icon.height() / 2, icon);
     }
 
+    // §38.1: chips sit under the bubble, aligned with its left edge.
+    const QVector<ReactionChipBox> chips =
+        reactionChips(option, index, bubbleRect.left(), bubbleRect.bottom() + 6,
+                      option.widget ? option.widget->width() - 24 : 616);
+    paintReactionChips(painter, chips, index.data(MessageListModel::ReactionsRole).toList(),
+                       tokens);
+
     painter->restore();
+}
+
+bool reactionChipAt(const QStyleOptionViewItem &option, const QModelIndex &index,
+                    const QPoint &pos, QString *emoji)
+{
+    const BubbleLayout layout = measureBubble(option, index);
+    if (!layout.hasReactions || layout.isSystem) {
+        return false;
+    }
+    const bool outgoing = index.data(MessageListModel::OutgoingRole).toBool();
+    const int left = outgoing ? option.rect.right() - layout.width - 12
+                              : option.rect.left() + 12;
+    const int top = option.rect.top() + 3 + layout.height - 6 - layout.reactionHeight + 6;
+    const QVector<ReactionChipBox> chips =
+        reactionChips(option, index, left, top,
+                      option.widget ? option.widget->width() - 24 : 616);
+    for (const ReactionChipBox &chip : chips) {
+        if (chip.rect.contains(pos)) {
+            if (emoji) {
+                *emoji = chip.emoji;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool pollOptionAt(const QStyleOptionViewItem &option, const QModelIndex &index,
+                  const QPoint &pos, int *optionIndex)
+{
+    const BubbleLayout layout = measureBubble(option, index);
+    if (!layout.isPoll) {
+        return false;
+    }
+    const PollGeometry geometry = pollGeometry(option, index, layout);
+    for (int i = 0; i < geometry.options.size(); ++i) {
+        if (geometry.options.at(i).contains(pos)) {
+            if (optionIndex) {
+                *optionIndex = i;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool pollCloseAt(const QStyleOptionViewItem &option, const QModelIndex &index,
+                 const QPoint &pos)
+{
+    const BubbleLayout layout = measureBubble(option, index);
+    if (!layout.isPoll) {
+        return false;
+    }
+    const int flags = index.data(MessageListModel::PollFlagsRole).toInt();
+    if ((flags & 0x10) == 0) {
+        return false;
+    }
+    return pollGeometry(option, index, layout).close.contains(pos);
 }
 
 } // namespace mini

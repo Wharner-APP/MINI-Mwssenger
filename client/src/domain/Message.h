@@ -45,6 +45,13 @@ struct Message
     QString forwardedFrom;
     // §38.2: set by the pins query; not stored in the messages row.
     qint64 pinnedAt = 0;
+    // §39: moment the message disappears, set when the peer reads it, or 0
+    // while the timer is off or the message has not been read yet.
+    qint64 expiresAt = 0;
+    // §38.3: poll owned by this message; the question stays in `body`.
+    QString pollId;
+    // §38.4: locally generated centred service line, never sent as a bubble.
+    bool system = false;
 };
 
 // Cursor for paged history. The timestamp is server_ts once the message is

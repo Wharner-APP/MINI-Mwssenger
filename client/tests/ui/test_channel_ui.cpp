@@ -136,13 +136,16 @@ void TestChannelUi::sidebarOffersNewChannel()
     Sidebar sidebar;
     QSignalSpy channelRequested(&sidebar, &Sidebar::newChannelRequested);
     QSignalSpy joinChannelRequested(&sidebar, &Sidebar::joinChannelRequested);
+    QSignalSpy botsRequested(&sidebar, &Sidebar::botsRequested);
     QMenu *menu = sidebar.newChatButton()->menu();
     QVERIFY(menu != nullptr);
-    QCOMPARE(menu->actions().size(), 5);
+    QCOMPARE(menu->actions().size(), 7); // six entries plus the separator
     menu->actions().at(3)->trigger();
     QCOMPARE(channelRequested.count(), 1);
     menu->actions().at(4)->trigger();
     QCOMPARE(joinChannelRequested.count(), 1);
+    menu->actions().at(6)->trigger();
+    QCOMPARE(botsRequested.count(), 1);
 }
 
 QTEST_MAIN(TestChannelUi)

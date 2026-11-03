@@ -28,6 +28,8 @@ public:
     // §32.4: 0 clears mute, >0 mutes until that moment, -1 means forever.
     Result<bool> setMutedUntil(const QString &chatId, qint64 untilMs);
     Result<bool> setArchived(const QString &chatId, bool archived);
+    // §39.1: 0, 1 min, 5 min, 1 hour, 1 day or 1 week.
+    Result<bool> setExpiresAfter(const QString &chatId, qint64 milliseconds);
     Result<bool> remove(const QString &chatId);
     // Deletes the chat row but keeps its messages as orphans (§4.8).
     Result<bool> removeKeepingMessages(const QString &chatId);

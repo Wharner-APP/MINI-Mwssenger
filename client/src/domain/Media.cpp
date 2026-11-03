@@ -318,6 +318,16 @@ bool looksLikeMediaBody(const QByteArray &body)
 RichBody decodeRichBody(const QByteArray &body)
 {
     RichBody decoded;
+    PollBody poll;
+    if (decodePollBody(body, &poll)) {
+        // §38.3: the poll body is JSON too, so it is checked before the media
+        // decoders; the question doubles as the chat-list preview.
+        decoded.hasPoll = true;
+        decoded.poll = poll;
+        decoded.kind = MediaKind::Text;
+        decoded.caption = poll.question;
+        return decoded;
+    }
     AlbumBody album;
     if (decodeAlbumBody(body, &album)) {
         decoded.kind = MediaKind::Album;

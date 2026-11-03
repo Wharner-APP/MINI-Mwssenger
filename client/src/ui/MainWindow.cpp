@@ -5,22 +5,31 @@
 #include "core/Log.h"
 #include "core/Settings.h"
 #include "domain/Channel.h"
+#include "domain/Disappearing.h"
 #include "domain/Group.h"
 #include "domain/Message.h"
 #include "services/ChannelService.h"
+#include "services/ExportService.h"
+#include "services/ImportService.h"
+#include "services/NotificationService.h"
 #include "services/ChatService.h"
 #include "services/ContactService.h"
 #include "services/DiagnosticsService.h"
+#include "services/FolderService.h"
 #include "services/GifCatalog.h"
+#include "services/BotService.h"
+#include "services/PrivacyService.h"
 #include "net/WsClient.h"
 #include "services/GroupService.h"
 #include "services/MediaCache.h"
 #include "services/MediaService.h"
 #include "services/MessageService.h"
+#include "services/PollService.h"
 #include "services/SearchService.h"
 #include "services/StickerService.h"
 #include "ui/AlbumSendDialog.h"
 #include "storage/StorageWorker.h"
+#include "ui/BotsDialog.h"
 #include "ui/ChatList.h"
 #include "ui/ChatListModel.h"
 #include "ui/ChatView.h"
@@ -28,6 +37,8 @@
 #include "ui/Composer.h"
 #include "ui/DiagnosticsDialog.h"
 #include "ui/ForwardDialog.h"
+#include "ui/FolderEditDialog.h"
+#include "ui/FolderRail.h"
 #include "ui/GroupInfoPanel.h"
 #include "ui/MediaSendDialog.h"
 #include "ui/MediaViewer.h"
@@ -35,9 +46,11 @@
 #include "ui/NewChannelDialog.h"
 #include "ui/NewGroupDialog.h"
 #include "ui/ProfilePanel.h"
+#include "ui/PollCreateDialog.h"
 #include "ui/Rail.h"
 #include "ui/SettingsDialog.h"
 #include "ui/Sidebar.h"
+#include "ui/widgets/Toast.h"
 
 #include <QAction>
 #include <QByteArray>
@@ -125,12 +138,14 @@ MainWindow::MainWindow(Settings *settings, QWidget *parent)
     connect(m_sidebar, &Sidebar::joinGroupRequested, this, &MainWindow::promptJoinGroup);
     connect(m_sidebar, &Sidebar::joinChannelRequested, this,
             &MainWindow::promptJoinChannel);
+    connect(m_sidebar, &Sidebar::botsRequested, this, &MainWindow::openBotsDialog);
     connect(m_sidebar, &Sidebar::chatSelected, this, &MainWindow::openChatById);
     connect(m_chatView, &ChatView::sendRequested, this, &MainWindow::sendMessage);
     connect(m_chatView, &ChatView::attachRequested, this, &MainWindow::attachFiles);
     connect(m_chatView, &ChatView::filesDropped, this, &MainWindow::handleFiles);
     connect(m_chatView, &ChatView::stickerRequested, this, &MainWindow::sendSticker);
     connect(m_chatView, &ChatView::gifRequested, this, &MainWindow::sendGif);
+    connect(m_chatView, &ChatView::pollRequested, this, &MainWindow::openPollDialog);
     connect(m_chatView, &ChatView::stickerInstallRequested, this,
             &MainWindow::installStickerPack);
     connect(m_chatView, &ChatView::stickerRemoveRequested, this,
@@ -210,6 +225,56 @@ MainWindow::MainWindow(Settings *settings, QWidget *parent)
                                                    [this](Result<bool>) { refreshPins(); });
                 }
             });
+    // §38.1
+    connect(m_chatView, &ChatView::reactionToggled, this,
+            [this](const QString &clientMsgId, const QString &emoji) {
+                if (!m_messageService) {
+                    return;
+                }
+                m_messageService->toggleReaction(
+                    clientMsgId, emoji, [this](Result<bool> result) {
+                        if (result.isError()) {
+                            statusBar()->showMessage(
+                                tr("Could not react: %1").arg(result.error()), 4000);
+                        }
+                    });
+            });
+    // §38.3
+    connect(m_chatView, &ChatView::pollVoteRequested, this,
+            [this](const QString &pollId, int optionIndex) {
+                if (!m_pollService) {
+                    return;
+                }
+                m_pollService->vote(pollId, optionIndex, [this](Result<bool> result) {
+                    if (result.isError()) {
+                        statusBar()->showMessage(
+                            result.error() == QLatin1String("poll.closed")
+                                ? tr("This poll is closed")
+                                : tr("Could not vote: %1").arg(result.error()),
+                            4000);
+                    }
+                });
+            });
+    connect(m_chatView, &ChatView::pollCloseRequested, this, [this](const QString &pollId) {
+        if (!m_pollService) {
+            return;
+        }
+        m_pollService->closePoll(pollId, m_chatView->mentionAllAllowed(),
+                                 [](Result<bool>) {});
+    });
+    // §39.1
+    connect(m_chatView, &ChatView::disappearingChanged, this, [this](qint64 milliseconds) {
+        if (!m_messageService || m_currentChat.chatId.isEmpty()) {
+            return;
+        }
+        m_messageService->setChatExpiry(
+            m_currentChat.chatId, milliseconds, [this](Result<bool> result) {
+                if (result.isError()) {
+                    statusBar()->showMessage(
+                        tr("Could not change the timer: %1").arg(result.error()), 4000);
+                }
+            });
+    });
     connect(m_chatView, &ChatView::mentionDenied, this, [this](const QString &) {
         statusBar()->showMessage(tr("@all is available to administrators only"), 4000);
     });
@@ -274,6 +339,46 @@ MainWindow::MainWindow(Settings *settings, QWidget *parent)
                 }
             });
 
+    // §48: the rail selects a rule set, reorders folders and opens the editor.
+    FolderRail *rail = m_sidebar->folderRail();
+    connect(rail, &FolderRail::folderSelected, this, [this](const QString &folderId) {
+        m_activeFolder = ChatFolder{};
+        for (const ChatFolder &folder : std::as_const(m_folders)) {
+            if (folder.id == folderId) {
+                m_activeFolder = folder;
+                break;
+            }
+        }
+        applyActiveFolder();
+    });
+    connect(rail, &FolderRail::foldersReordered, this, [this](const QStringList &ids) {
+        if (m_folderService) {
+            m_folderService->reorder(ids, [](Result<bool>) {});
+        }
+    });
+    connect(rail, &FolderRail::newFolderRequested, this,
+            [this] { openFolderDialog(ChatFolder{}); });
+    connect(rail, &FolderRail::editFolderRequested, this, [this](const QString &folderId) {
+        for (const ChatFolder &folder : std::as_const(m_folders)) {
+            if (folder.id == folderId) {
+                openFolderDialog(folder);
+                return;
+            }
+        }
+    });
+    connect(rail, &FolderRail::deleteFolderRequested, this, [this](const QString &folderId) {
+        if (!m_folderService) {
+            return;
+        }
+        m_folderService->removeFolder(folderId, [this, folderId](Result<bool>) {
+            if (m_activeFolder.id == folderId) {
+                m_activeFolder = ChatFolder{};
+                applyActiveFolder();
+            }
+            refreshFolders();
+        });
+    });
+
     if (m_settings) {
         const QString geometry = m_settings->get(kGeometryKey);
         if (!geometry.isEmpty()) {
@@ -281,6 +386,7 @@ MainWindow::MainWindow(Settings *settings, QWidget *parent)
         }
     }
 
+    setupNotifications();
     setupTray();
     setupShortcuts();
 }
@@ -296,6 +402,9 @@ void MainWindow::setupShortcuts()
     bind(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), [this] { openNewGroupDialog(); });
     bind(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K),
          [this] { openNewChannelDialog(); });
+    // §38.3: poll creation from the keyboard; the same dialog is reachable
+    // from the composer menu in the next pass.
+    bind(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P), [this] { openPollDialog(); });
     bind(QKeySequence(Qt::CTRL | Qt::Key_Comma), [this] { openSettings(); });
     bind(QKeySequence(Qt::Key_F5), [this] {
         if (m_ws) {
@@ -383,6 +492,9 @@ void MainWindow::setupTray()
     m_trayExit->setObjectName(QStringLiteral("trayExitAction"));
 
     m_tray->setContextMenu(m_trayMenu);
+    if (m_notifications) {
+        m_notifications->setTrayIcon(m_tray);
+    }
 
     connect(m_tray, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason reason) {
@@ -401,6 +513,10 @@ void MainWindow::setupTray()
         if (m_settings) {
             m_settings->setBool(kDoNotDisturbKey, enabled);
             m_settings->flush();
+        }
+        // §46.2: leaving DND acknowledges everything that accumulated.
+        if (!enabled && m_notifications) {
+            m_notifications->clearAccumulated();
         }
     });
 
@@ -467,6 +583,133 @@ void MainWindow::setSearchService(services::SearchService *service)
     m_sidebar->chatList()->setSearchService(service);
 }
 
+void MainWindow::setBotService(services::BotService *service)
+{
+    m_botService = service;
+}
+
+void MainWindow::setPrivacyService(services::PrivacyService *service)
+{
+    m_privacyService = service;
+    if (m_settingsDialog) {
+        m_settingsDialog->setPrivacyService(service);
+    }
+}
+
+void MainWindow::setNotificationService(services::NotificationService *service)
+{
+    if (m_notifications == service) {
+        return;
+    }
+    if (m_notifications && m_notifications->parent() == this) {
+        m_notifications->deleteLater();
+    }
+    m_notifications = service;
+    if (!m_notifications) {
+        return;
+    }
+    m_notifications->setTrayIcon(m_tray);
+    connectNotificationSignals();
+}
+
+void MainWindow::setExportService(services::ExportService *service)
+{
+    m_export = service;
+    if (m_settingsDialog) {
+        m_settingsDialog->setExportService(service);
+    }
+}
+
+void MainWindow::setImportService(services::ImportService *service)
+{
+    m_import = service;
+    if (m_settingsDialog) {
+        m_settingsDialog->setImportService(service);
+    }
+}
+
+void MainWindow::setupNotifications()
+{
+    if (!m_notifications) {
+        m_notifications = new services::NotificationService(m_settings, this);
+    }
+    connectNotificationSignals();
+}
+
+void MainWindow::connectNotificationSignals()
+{
+    if (!m_notifications) {
+        return;
+    }
+    disconnect(m_notifications, nullptr, this, nullptr);
+    // §46.2: muted chats and the global switch only raise the counter.
+    connect(m_notifications, &services::NotificationService::counterRequested, this,
+            [this](const QString &) { refreshChatList(); });
+    connect(m_notifications, &services::NotificationService::toastRequested, this,
+            [this](const QString &chatId, const QString &title, const QString &body) {
+                showToast(chatId, title, body);
+            });
+    // §46.2: while Do Not Disturb is on, events accumulate instead of showing.
+    connect(m_notifications, &services::NotificationService::accumulatedChanged, this,
+            [this](int count) {
+                if (count > 0) {
+                    statusBar()->showMessage(
+                        tr("%1 notifications are waiting").arg(count), 5000);
+                }
+            });
+}
+
+void MainWindow::handleIncomingNotification(const Message &message)
+{
+    if (!m_notifications) {
+        return;
+    }
+    const Chat chat = m_sidebar->chatList()->chatById(message.chatId);
+    services::NotificationEvent event;
+    event.chatId = message.chatId;
+    event.title = !chat.title.isEmpty()
+        ? chat.title
+        : (chat.peerLogin.isEmpty() ? message.chatId : chat.peerLogin);
+    event.body = message.body;
+    event.mention = messageMentionsSelf(message);
+    event.secret = chat.kind == QLatin1String("secret");
+    event.windowMinimized = isMinimized();
+    event.windowActive = isActiveWindow() && !event.windowMinimized;
+    event.chatOpen = event.windowActive && message.chatId == m_currentChat.chatId;
+    event.chatMuted =
+        chat.muted
+        || (chat.mutedUntil > 0 && chat.mutedUntil > QDateTime::currentMSecsSinceEpoch());
+    m_notifications->notify(event);
+}
+
+bool MainWindow::messageMentionsSelf(const Message &message) const
+{
+    if (!m_messageService) {
+        return false;
+    }
+    const QString login = m_messageService->selfLogin();
+    if (login.isEmpty() || message.body.isEmpty()) {
+        return false;
+    }
+    return message.body.contains(QLatin1Char('@') + login, Qt::CaseInsensitive)
+        || message.body.contains(QStringLiteral("@all"), Qt::CaseInsensitive);
+}
+
+void MainWindow::showToast(const QString &chatId, const QString &title,
+                           const QString &body)
+{
+    if (!m_toast) {
+        m_toast = new Toast(this);
+        connect(m_toast, &Toast::clicked, this, [this] {
+            if (!m_toastChatId.isEmpty()) {
+                openChatById(m_toastChatId);
+            }
+        });
+    }
+    m_toastChatId = chatId;
+    m_toast->showMessage(title, body);
+}
+
 void MainWindow::setStickerService(services::StickerService *service)
 {
     if (m_stickers == service) {
@@ -490,7 +733,193 @@ void MainWindow::setMessageService(services::MessageService *service)
         disconnect(m_messageService, nullptr, this, nullptr);
     }
     m_messageService = service;
+    if (m_messageService) {
+        m_chatView->setSelfLogin(m_messageService->selfLogin());
+    }
     connectMessageService();
+}
+
+void MainWindow::setPollService(services::PollService *service)
+{
+    if (m_pollService == service) {
+        return;
+    }
+    if (m_pollService) {
+        disconnect(m_pollService, nullptr, this, nullptr);
+    }
+    m_pollService = service;
+    if (!m_pollService) {
+        return;
+    }
+    if (m_messageService) {
+        m_pollService->setMessageService(m_messageService);
+    }
+    connect(m_pollService, &services::PollService::pollChanged, this,
+            [this](const QString &chatId, const QString &pollId) {
+                if (chatId == m_currentChat.chatId) {
+                    refreshPoll(pollId);
+                }
+            });
+    connect(m_pollService, &services::PollService::errorOccurred, this,
+            [this](const QString &code, const QString &) {
+                statusBar()->showMessage(tr("Poll: %1").arg(code), 5000);
+            });
+}
+
+void MainWindow::setFolderService(services::FolderService *service)
+{
+    if (m_folderService == service) {
+        return;
+    }
+    if (m_folderService) {
+        disconnect(m_folderService, nullptr, this, nullptr);
+    }
+    m_folderService = service;
+    if (!m_folderService) {
+        m_folders.clear();
+        m_activeFolder = ChatFolder{};
+        applyActiveFolder();
+        return;
+    }
+    connect(m_folderService, &services::FolderService::foldersChanged, this,
+            &MainWindow::refreshFolders);
+    refreshFolders();
+}
+
+void MainWindow::refreshReactions(const QString &chatId)
+{
+    if (!m_messageService || chatId.isEmpty()) {
+        return;
+    }
+    m_messageService->reactionsForChat(
+        chatId, [this, chatId](Result<QVector<Reaction>> result) {
+            if (result.isOk() && m_currentChat.chatId == chatId) {
+                m_chatView->setReactions(chatId, result.value());
+            }
+        });
+}
+
+void MainWindow::refreshPollsForChat(const QString &chatId, const QVector<Message> &messages)
+{
+    Q_UNUSED(chatId);
+    if (!m_pollService) {
+        return;
+    }
+    QSet<QString> seen;
+    for (const Message &message : messages) {
+        if (message.pollId.isEmpty() || seen.contains(message.pollId)) {
+            continue;
+        }
+        seen.insert(message.pollId);
+        refreshPoll(message.pollId);
+    }
+}
+
+void MainWindow::refreshPoll(const QString &pollId)
+{
+    if (!m_pollService || pollId.isEmpty()) {
+        return;
+    }
+    m_pollService->results(pollId, [this, pollId](Result<PollResult> result) {
+        if (result.isOk()) {
+            m_chatView->setPollResult(result.value());
+        }
+    });
+}
+
+void MainWindow::openPollDialog()
+{
+    if (!m_pollService || m_currentChat.chatId.isEmpty()) {
+        statusBar()->showMessage(tr("Open a chat to create a poll"), 4000);
+        return;
+    }
+    PollCreateDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QString chatId = m_currentChat.chatId;
+    m_pollService->createPoll(
+        chatId, dialog.poll(), [this, chatId](Result<QString> result) {
+            if (result.isError()) {
+                statusBar()->showMessage(
+                    tr("Could not create the poll: %1").arg(result.error()), 5000);
+                return;
+            }
+            refreshPoll(result.value());
+        });
+}
+
+void MainWindow::refreshFolders()
+{
+    if (!m_folderService) {
+        m_folders.clear();
+        m_activeFolder = ChatFolder{};
+        m_sidebar->folderRail()->setFolders({}, {}, QString());
+        applyActiveFolder();
+        return;
+    }
+    m_folderService->listFolders([this](Result<QVector<ChatFolder>> result) {
+        if (result.isError()) {
+            return;
+        }
+        m_folders = result.value();
+        bool activeStillExists = m_activeFolder.id.isEmpty();
+        QHash<QString, int> counts;
+        const QVector<Chat> chats = m_sidebar->chatList()->chats();
+        for (const ChatFolder &folder : std::as_const(m_folders)) {
+            if (folder.id == m_activeFolder.id) {
+                m_activeFolder = folder;
+                activeStillExists = true;
+            }
+            int unread = 0;
+            for (const Chat &chat : chats) {
+                if (folderMatches(folder, chat)) {
+                    unread += chat.unreadCount;
+                }
+            }
+            counts.insert(folder.id, unread);
+        }
+        if (!activeStillExists) {
+            m_activeFolder = ChatFolder{};
+        }
+        m_sidebar->folderRail()->setFolders(m_folders, counts,
+                                            m_activeFolder.id);
+        applyActiveFolder();
+    });
+}
+
+void MainWindow::openFolderDialog(const ChatFolder &folder)
+{
+    if (!m_folderService) {
+        statusBar()->showMessage(tr("Folders are not available yet."), 4000);
+        return;
+    }
+    FolderEditDialog dialog(this);
+    dialog.setWindowTitle(folder.id.isEmpty() ? tr("New folder") : tr("Edit folder"));
+    if (!folder.id.isEmpty()) {
+        dialog.setFolder(folder);
+    }
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    ChatFolder edited = dialog.folder();
+    edited.id = folder.id;
+    m_folderService->saveFolder(edited, [this](Result<ChatFolder> result) {
+        if (result.isError()) {
+            statusBar()->showMessage(
+                result.error() == QLatin1String("folder.limit")
+                    ? tr("Up to 10 folders")
+                    : tr("Could not save the folder: %1").arg(result.error()),
+                5000);
+            return;
+        }
+        refreshFolders();
+    });
+}
+
+void MainWindow::applyActiveFolder()
+{
+    m_sidebar->chatList()->setActiveFolder(m_activeFolder);
 }
 
 void MainWindow::setMediaService(services::MediaService *service)
@@ -550,6 +979,18 @@ void MainWindow::connectMessageService()
             [this](const Message &message) {
                 if (message.chatId == m_currentChat.chatId) {
                     m_chatView->appendMessage(message);
+                    if (!message.pollId.isEmpty()) {
+                        refreshPoll(message.pollId);
+                    }
+                }
+                if (message.outgoing) {
+                    // §46.3: the outgoing cue confirms a send; playSound()
+                    // itself honours the global sound switch.
+                    if (m_notifications) {
+                        m_notifications->playSound(services::NotificationSound::Outgoing);
+                    }
+                } else {
+                    handleIncomingNotification(message);
                 }
                 refreshChatList();
             });
@@ -582,6 +1023,9 @@ void MainWindow::connectMessageService()
                     m_chatView->setDraft(text);
                     statusBar()->showMessage(tr("The message was not sent."), 4000);
                 }
+                if (m_notifications) {
+                    m_notifications->playSound(services::NotificationSound::Error);
+                }
             });
     connect(m_messageService, &services::MessageService::pendingChanged, this,
             [this](int pending) {
@@ -589,6 +1033,47 @@ void MainWindow::connectMessageService()
                     statusBar()->showMessage(tr("%1 pending").arg(pending));
                 } else {
                     statusBar()->clearMessage();
+                }
+            });
+    // §38.1
+    connect(m_messageService, &services::MessageService::reactionsChanged, this,
+            [this](const QString &chatId, const QString &) {
+                if (chatId == m_currentChat.chatId) {
+                    refreshReactions(chatId);
+                }
+            });
+    // §38.3
+    connect(m_messageService, &services::MessageService::pollsChanged, this,
+            [this](const QString &chatId, const QString &pollId) {
+                if (chatId == m_currentChat.chatId) {
+                    refreshPoll(pollId);
+                }
+            });
+    // §39: the timer line changed locally or arrived from a peer.
+    connect(m_messageService, &services::MessageService::chatTimerChanged, this,
+            [this](const QString &chatId, qint64 afterMs) {
+                if (chatId != m_currentChat.chatId) {
+                    return;
+                }
+                m_currentChat.expiresAfterMs = afterMs;
+                m_chatView->setDisappearingAfter(afterMs);
+                refreshChatList();
+            });
+    // §39.3: drop cached files of expired media.
+    connect(m_messageService, &services::MessageService::mediaExpired, this,
+            [this](const QStringList &mediaIds) {
+                if (!m_media) {
+                    return;
+                }
+                for (const QString &mediaId : mediaIds) {
+                    services::MediaCache *cache = m_media->cache();
+                    if (!cache) {
+                        continue;
+                    }
+                    cache->remove(mediaId, false);
+                    for (const int size : {96, 160, 320}) {
+                        cache->remove(services::MediaCache::keyFor(mediaId, size), true);
+                    }
                 }
             });
 }
@@ -613,6 +1098,13 @@ void MainWindow::openSettings()
         m_settingsDialog = new SettingsDialog(m_settings, this);
         connect(m_settingsDialog, &SettingsDialog::diagnosticsRequested, this,
                 &MainWindow::openDiagnostics);
+        // §49.2: after a merge the list and the open chat reload from storage.
+        connect(m_settingsDialog, &SettingsDialog::dataImported, this, [this] {
+            refreshChatList();
+            if (!m_currentChat.chatId.isEmpty()) {
+                openChatById(m_currentChat.chatId);
+            }
+        });
     }
     if (m_storage) {
         m_settingsDialog->setBackupTarget(
@@ -622,6 +1114,10 @@ void MainWindow::openSettings()
     if (m_diagnostics) {
         m_settingsDialog->setDiagnosticsService(m_diagnostics);
     }
+    m_settingsDialog->setPrivacyService(m_privacyService);
+    m_settingsDialog->setNotificationService(m_notifications);
+    m_settingsDialog->setExportService(m_export);
+    m_settingsDialog->setImportService(m_import);
     Log::info(QStringLiteral("ui.settings_opened"));
     m_settingsDialog->exec();
 }
@@ -851,6 +1347,34 @@ void MainWindow::openChannelInfo(const QString &channelId)
     panel->activateWindow();
 }
 
+void MainWindow::openBotsDialog()
+{
+    if (!m_botService) {
+        statusBar()->showMessage(tr("Bots are not available yet."), 4000);
+        return;
+    }
+    BotsDialog dialog(m_botService, this);
+    connect(&dialog, &BotsDialog::chatRequested, this, &MainWindow::openBotChat);
+    dialog.exec();
+}
+
+void MainWindow::openBotChat(const services::BotInfo &bot)
+{
+    if (!m_botService) {
+        statusBar()->showMessage(tr("Bots are not available yet."), 4000);
+        return;
+    }
+    m_botService->openChat(bot, [this, botId = bot.botId](Result<Chat> result) {
+        if (result.isError()) {
+            statusBar()->showMessage(
+                tr("Could not open the bot chat: %1").arg(result.error()), 5000);
+            return;
+        }
+        openChat(result.value());
+        m_currentBotId = botId;
+    });
+}
+
 void MainWindow::promptJoinChannel()
 {
     if (!m_channelService) {
@@ -927,7 +1451,27 @@ void MainWindow::openChatById(const QString &chatId)
 void MainWindow::openChat(const Chat &chat)
 {
     m_currentChat = chat;
+    // Selecting a chat always invalidates the previous bot id; the bot path
+    // below (or openBotChat) fills it again for this specific chat.
+    m_currentBotId.clear();
     m_chatView->setChat(chat);
+    // §44: a bot chat opened by exact login still needs its bot id for the
+    // plaintext send endpoint. The list call is cheap and local to the owner.
+    if (chat.isBot && m_currentBotId.isEmpty() && m_botService) {
+        const QString chatId = chat.chatId;
+        const QString peerLogin = chat.peerLogin;
+        m_botService->listBots([this, chatId, peerLogin](Result<QVector<services::BotInfo>> result) {
+            if (!result.isOk() || m_currentChat.chatId != chatId) {
+                return;
+            }
+            for (const services::BotInfo &bot : result.value()) {
+                if (bot.login.compare(peerLogin, Qt::CaseInsensitive) == 0) {
+                    m_currentBotId = bot.botId;
+                    break;
+                }
+            }
+        });
+    }
     m_chatView->setMessages({});
     refreshPins();
 
@@ -984,6 +1528,9 @@ void MainWindow::openChat(const Chat &chat)
             if (result.isOk() && m_currentChat.chatId == chatId) {
                 const QVector<Message> messages = result.value();
                 m_chatView->setMessages(messages);
+                // §38.1 / §38.3: chips and poll tallies for the visible page.
+                refreshReactions(chatId);
+                refreshPollsForChat(chatId, messages);
                 if (!m_pendingJumpId.isEmpty()) {
                     const QString target = m_pendingJumpId;
                     m_pendingJumpId.clear();
@@ -1046,6 +1593,20 @@ void MainWindow::sendMessage(const QString &text)
     if (!m_messageService || m_currentChat.chatId.isEmpty()) {
         statusBar()->showMessage(tr("Messaging is not available yet."), 4000);
         m_chatView->setDraft(text);
+        return;
+    }
+    // §29.14: bot chats are plaintext on the server and take the bot endpoint.
+    if (m_currentChat.isBot && m_botService && !m_currentBotId.isEmpty()) {
+        m_botService->sendText(
+            m_currentBotId, m_currentChat.chatId, text,
+            [this, text](Result<bool> result) {
+                if (result.isError()) {
+                    m_chatView->setDraft(text);
+                    statusBar()->showMessage(
+                        tr("The bot did not accept the message: %1").arg(result.error()),
+                        5000);
+                }
+            });
         return;
     }
     const QString clientMsgId =
@@ -1690,6 +2251,21 @@ void MainWindow::refreshChatList()
         if (result.isOk()) {
             m_sidebar->chatList()->setChats(result.value());
             subscribePresence();
+            // §48.2: the rail counters follow unread changes in the list.
+            if (!m_folders.isEmpty()) {
+                QHash<QString, int> counts;
+                for (const ChatFolder &folder : std::as_const(m_folders)) {
+                    int unread = 0;
+                    for (const Chat &chat : result.value()) {
+                        if (folderMatches(folder, chat)) {
+                            unread += chat.unreadCount;
+                        }
+                    }
+                    counts.insert(folder.id, unread);
+                }
+                m_sidebar->folderRail()->setFolders(m_folders, counts,
+                                                    m_activeFolder.id);
+            }
         }
     });
 }

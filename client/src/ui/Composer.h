@@ -45,6 +45,7 @@ public:
     [[nodiscard]] QToolButton *emojiButton() const { return m_emoji; }
     [[nodiscard]] QToolButton *stickerButton() const { return m_sticker; }
     [[nodiscard]] QToolButton *gifButton() const { return m_gif; }
+    [[nodiscard]] QToolButton *pollButton() const { return m_poll; }
     [[nodiscard]] QFrame *picker() const { return m_picker; }
     [[nodiscard]] EmojiPanel *emojiPanel() const { return m_emojiPanel; }
     [[nodiscard]] StickerPanel *stickerPanel() const { return m_stickerPanel; }
@@ -73,6 +74,8 @@ signals:
     void stickerInstallRequested();
     void stickerRemoveRequested(const QString &packId);
     void recentEmojiChanged(const QStringList &characters);
+    // §38.3: the same dialog as Ctrl+Shift+P.
+    void pollRequested();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -93,6 +96,7 @@ private:
     QToolButton *m_emoji = nullptr;
     QToolButton *m_sticker = nullptr;
     QToolButton *m_gif = nullptr;
+    QToolButton *m_poll = nullptr;
     QToolButton *m_send = nullptr;
     QFrame *m_picker = nullptr;
     QStackedWidget *m_pages = nullptr;
