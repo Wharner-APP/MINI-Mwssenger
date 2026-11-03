@@ -4,7 +4,7 @@
 Мессенджер «для своих»: вход по логину, паролю и файлу `sign.in`, без телефона и почты.
 Клиент — C++20 / Qt 6 Widgets, сервер — Python 3.12 / FastAPI / SQLite,
 HTTP и WebSocket поверх TLS 1.3 с пиннингом отпечатка. Учебный проект,
-текущая сборка — ядро (фазы 0–2).
+текущая сборка — фазы 0–4 (боты, реакции, опросы, папки, уведомления, экспорт, RU/EN).
 
 ## Команды
 
@@ -15,7 +15,7 @@ HTTP и WebSocket поверх TLS 1.3 с пиннингом отпечатка.
 | `py -3.12 -m venv server\.venv` | один раз: окружение сервера |
 | `server\.venv\Scripts\python.exe -m pip install -r server\requirements.txt` | зависимости сервера в это окружение |
 | `.\scripts\build.ps1 -Configuration Release` | CMake + Ninja + сборка + `windeployqt` → `dist\MINI Messenger.exe` |
-| `.\scripts\check.ps1` | Release-сборка + `ctest` (41) + `pytest` (98) одним прогоном |
+| `.\scripts\check.ps1` | Release-сборка + `ctest` (67) + `pytest` (197) одним прогоном |
 | `.\scripts\run_server.ps1` | сервер на `127.0.0.1:8765` по TLS; сам создаёт `server\.venv`, `server\configs\server.toml` и пишет отпечаток в `client\config\server_fingerprint.txt` |
 | `.\scripts\run_bore.ps1 -LocalPort 8765` | публичный туннель; пишет `client\config\connect.ip` и строку `CURRENT TUNNEL` в README |
 | `& "dist\MINI Messenger.exe"` | клиент |
@@ -57,7 +57,8 @@ HTTP и WebSocket поверх TLS 1.3 с пиннингом отпечатка.
   `MINI_CAPTCHA_SECRET`, `MINI_CAPTCHA_PROVIDER`, `MINI_CAPTCHA_KEY`, `MINI_LOG_LEVEL`,
   `MINI_ALLOW_REGISTRATION`.
 - Одно устройство на аккаунт. Личные чаты шифруются X3DH + Double Ratchet; группы,
-  медиа, боты, звонки, премиум — следующие сборки (фазы 3–6).
+  медиа, боты, реакции, опросы, папки, уведомления, экспорт/импорт и RU/EN уже есть;
+  звонки, премиум — следующие сборки (фазы 5–6).
 
 ## Как здесь работает Autopilot
 
