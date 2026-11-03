@@ -73,6 +73,64 @@ public:
     // Exact-login public profile (GET /api/v1/users/{login}).
     void lookupUser(const QString &login, Callback<AccountProfile> callback);
 
+    // Groups (§30.5). Every call is authenticated; member identifiers are the
+    // server's user ids, except create/add which also accept logins.
+    void listGroups(Callback<QList<GroupInfo>> callback);
+    void createGroup(const GroupCreateRequest &request, Callback<GroupInfo> callback);
+    void getGroup(const QString &groupId, Callback<GroupInfo> callback);
+    void updateGroup(const QString &groupId, const GroupPatch &patch,
+                     Callback<GroupInfo> callback);
+    void addGroupMember(const QString &groupId, const QString &userIdOrLogin,
+                        Callback<GroupMemberInfo> callback);
+    void removeGroupMember(const QString &groupId, const QString &userId, bool ban,
+                           int durationHours, Callback<Empty> callback);
+    void setGroupRole(const QString &groupId, const QString &userId, const QString &role,
+                      quint32 permissions, Callback<GroupMemberInfo> callback);
+    void transferGroupOwnership(const QString &groupId, const QString &userId,
+                                Callback<GroupInfo> callback);
+    void createGroupInvite(const QString &groupId, Callback<GroupInvite> callback);
+    void joinGroup(const QString &token, const QString &message,
+                   Callback<GroupJoinResult> callback);
+    void requestGroupJoin(const QString &groupId, const QString &message,
+                          Callback<GroupJoinRequestInfo> callback);
+    void listGroupRequests(const QString &groupId, const QString &status,
+                           Callback<QList<GroupJoinRequestInfo>> callback);
+    void approveGroupRequest(const QString &groupId, const QString &userId, bool approve,
+                             Callback<GroupJoinRequestInfo> callback);
+    void banGroupMember(const QString &groupId, const QString &userId, bool permanent,
+                        int durationHours, const QString &reason, Callback<Empty> callback);
+    void unbanGroupMember(const QString &groupId, const QString &userId,
+                          Callback<Empty> callback);
+
+    // Channels (§30.5, §43). A channel is a broadcast container; the server
+    // never sees post bodies, only the (channel, post, user) view fact.
+    void listChannels(Callback<QList<ChannelInfo>> callback);
+    void createChannel(const ChannelCreateRequest &request, Callback<ChannelInfo> callback);
+    void getChannel(const QString &channelId, Callback<ChannelInfo> callback);
+    void updateChannel(const QString &channelId, const ChannelPatch &patch,
+                       Callback<ChannelInfo> callback);
+    void deleteChannel(const QString &channelId, Callback<Empty> callback);
+    void subscribeChannel(const QString &channelId, const QString &token,
+                          Callback<QString> callback);
+    void unsubscribeChannel(const QString &channelId, Callback<QString> callback);
+    void listChannelMembers(const QString &channelId,
+                            Callback<QList<ChannelMemberInfo>> callback);
+    void setChannelRole(const QString &channelId, const QString &userId,
+                        const QString &role, quint32 permissions,
+                        Callback<ChannelMemberInfo> callback);
+    void createChannelInvite(const QString &channelId, Callback<ChannelInvite> callback);
+    void recordChannelView(const QString &channelId, const QString &postId,
+                           Callback<ChannelViewInfo> callback);
+
+    // Encrypted media staging (§29.11, §30.5.2). Chunks are raw ciphertext,
+    // not JSON: never log or re-encode them.
+    void mediaInit(qint64 totalSize, qint64 chunkSize,
+                   Callback<MediaUploadSession> callback);
+    void mediaPutChunk(const QString &uploadId, int idx, const QByteArray &data,
+                       Callback<MediaChunkResult> callback);
+    void mediaComplete(const QString &uploadId, Callback<MediaCompleteResult> callback);
+    void mediaGetChunk(const QString &uploadId, int idx, Callback<QByteArray> callback);
+
 signals:
     // A 401 from any endpoint. The caller must stop retrying and sign in again.
     void authenticationRequired();
@@ -87,6 +145,11 @@ private:
 
     void send(const QByteArray &method, const QString &path, const QJsonObject &body,
               bool authenticated, RawCallback callback);
+    // Transport primitive: builds the pinned request and maps the reply to
+    // either raw bytes or an ApiError. JSON parsing stays in the callers.
+    void perform(const QByteArray &method, const QString &path,
+                 const QByteArray &payload, const QByteArray &contentType,
+                 bool authenticated, RawCallback callback);
     [[nodiscard]] ApiError tlsErrorFor(QNetworkReply *reply) const;
 
     Endpoint m_endpoint;

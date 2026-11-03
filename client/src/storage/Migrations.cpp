@@ -84,7 +84,242 @@ DROP TABLE IF EXISTS messages_fts;
     {3, R"sql(
 SELECT 1;
 )sql"},
+    // Groups (phase 3). Server group state is cached locally so the chat list
+    // survives a restart; sender key material is sealed with BodyCipher.
+    {4, R"sql(
+CREATE TABLE IF NOT EXISTS groups (
+    group_id        TEXT PRIMARY KEY,
+    title           TEXT NOT NULL DEFAULT '',
+    about           TEXT NOT NULL DEFAULT '',
+    avatar_media    TEXT NOT NULL DEFAULT '',
+    owner_id        TEXT NOT NULL DEFAULT '',
+    is_public       INTEGER NOT NULL DEFAULT 0,
+    slow_mode_sec   INTEGER NOT NULL DEFAULT 0,
+    join_by_request INTEGER NOT NULL DEFAULT 0,
+    invite_token    TEXT NOT NULL DEFAULT '',
+    invite_link     TEXT NOT NULL DEFAULT '',
+    my_role         TEXT NOT NULL DEFAULT 'member',
+    my_permissions  INTEGER NOT NULL DEFAULT 0,
+    member_count    INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL DEFAULT 0,
+    updated_at      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_groups_updated ON groups(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id     TEXT NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL,
+    login        TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    role         TEXT NOT NULL DEFAULT 'member',
+    permissions  INTEGER NOT NULL DEFAULT 0,
+    joined_at    INTEGER NOT NULL DEFAULT 0,
+    muted_until  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS ix_group_members_login ON group_members(group_id, login);
+
+CREATE TABLE IF NOT EXISTS group_sender_keys (
+    group_id        TEXT NOT NULL,
+    sender_id       TEXT NOT NULL,
+    key_id          INTEGER NOT NULL DEFAULT 0,
+    iteration       INTEGER NOT NULL DEFAULT 0,
+    prev_iteration  INTEGER NOT NULL DEFAULT 0,
+    chain_key       BLOB NOT NULL,
+    signing_public  BLOB NOT NULL,
+    signing_private BLOB NOT NULL DEFAULT x'',
+    updated_at      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(group_id, sender_id)
+);
+)sql"},
+    // Channels (phase 3, §43). A channel is a group with publisher roles:
+    // the same sender-key material, keyed by channel_id.
+    {5, R"sql(
+CREATE TABLE IF NOT EXISTS channels (
+    channel_id       TEXT PRIMARY KEY,
+    title            TEXT NOT NULL DEFAULT '',
+    about            TEXT NOT NULL DEFAULT '',
+    avatar_media     TEXT NOT NULL DEFAULT '',
+    owner_id         TEXT NOT NULL DEFAULT '',
+    is_public        INTEGER NOT NULL DEFAULT 0,
+    linked_group     TEXT NOT NULL DEFAULT '',
+    invite_token     TEXT NOT NULL DEFAULT '',
+    invite_link      TEXT NOT NULL DEFAULT '',
+    my_role          TEXT NOT NULL DEFAULT '',
+    is_member        INTEGER NOT NULL DEFAULT 0,
+    my_permissions   INTEGER NOT NULL DEFAULT 0,
+    subscriber_count INTEGER NOT NULL DEFAULT 0,
+    created_at       INTEGER NOT NULL DEFAULT 0,
+    updated_at       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_channels_updated ON channels(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS channel_members (
+    channel_id   TEXT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL,
+    login        TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    role         TEXT NOT NULL DEFAULT 'subscriber',
+    permissions  INTEGER NOT NULL DEFAULT 0,
+    joined_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(channel_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS ix_channel_members_login ON channel_members(channel_id, login);
+
+CREATE TABLE IF NOT EXISTS channel_sender_keys (
+    channel_id      TEXT NOT NULL,
+    sender_id       TEXT NOT NULL,
+    key_id          INTEGER NOT NULL DEFAULT 0,
+    iteration       INTEGER NOT NULL DEFAULT 0,
+    prev_iteration  INTEGER NOT NULL DEFAULT 0,
+    chain_key       BLOB NOT NULL,
+    signing_public  BLOB NOT NULL,
+    signing_private BLOB NOT NULL DEFAULT x'',
+    updated_at      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(channel_id, sender_id)
+);
+)sql"},
+    // Media (phase 3, §40). The message row keeps the caption in `body` and
+    // points at one media row; the file key and nonce base are sealed with
+    // DB_KEY, so a copied database alone cannot decrypt downloaded chunks.
+    {6, R"sql(
+CREATE TABLE IF NOT EXISTS media (
+    media_id          TEXT PRIMARY KEY,
+    chat_id           TEXT NOT NULL DEFAULT '',
+    kind              TEXT NOT NULL DEFAULT 'file',
+    mime              TEXT NOT NULL DEFAULT '',
+    name              TEXT NOT NULL DEFAULT '',
+    size              INTEGER NOT NULL DEFAULT 0,
+    chunk_size        INTEGER NOT NULL DEFAULT 0,
+    file_hash         TEXT NOT NULL DEFAULT '',
+    file_key          BLOB NOT NULL DEFAULT x'',
+    nonce_base        BLOB NOT NULL DEFAULT x'',
+    width             INTEGER NOT NULL DEFAULT 0,
+    height            INTEGER NOT NULL DEFAULT 0,
+    duration_ms       INTEGER NOT NULL DEFAULT 0,
+    state             TEXT NOT NULL DEFAULT 'prepared',
+    uploaded_chunks   INTEGER NOT NULL DEFAULT 0,
+    downloaded_chunks INTEGER NOT NULL DEFAULT 0,
+    local_path        TEXT NOT NULL DEFAULT '',
+    created_at        INTEGER NOT NULL DEFAULT 0,
+    updated_at        INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_media_chat ON media(chat_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_media_hash ON media(chat_id, file_hash);
+
+CREATE TABLE IF NOT EXISTS media_meta (
+    media_id TEXT NOT NULL,
+    key      TEXT NOT NULL,
+    value    TEXT NOT NULL,
+    PRIMARY KEY(media_id, key)
+);
+)sql"},
+    // Phase 3 message actions (§37, §38.2) and chat archive/mute (§32.4).
+    // Columns are added by ensureActionColumns so an interrupted migration is
+    // safe to re-run.
+    {7, R"sql(
+CREATE TABLE IF NOT EXISTS chat_pins (
+    chat_id       TEXT NOT NULL,
+    client_msg_id TEXT NOT NULL REFERENCES messages(client_msg_id) ON DELETE CASCADE,
+    pinned_at     INTEGER NOT NULL DEFAULT 0,
+    pinned_by     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(chat_id, client_msg_id)
+);
+CREATE INDEX IF NOT EXISTS ix_chat_pins_order ON chat_pins(chat_id, pinned_at DESC);
+)sql"},
 };
+
+// SQLite has no ADD COLUMN IF NOT EXISTS, and a database may already have the
+// media columns when schema_version was rewound by a test or a crash. Check
+// PRAGMA first so migration 6 is idempotent.
+bool messageColumnExists(Database &db, const char *column)
+{
+    detail::Statement statement(db.handle(), "PRAGMA table_info(messages)");
+    if (!statement.isOk()) {
+        return true; // cannot inspect: do not attempt a blind ALTER
+    }
+    int rc = statement.step();
+    while (rc == SQLITE_ROW) {
+        if (statement.text(1) == QLatin1String(column)) {
+            return true;
+        }
+        rc = statement.step();
+    }
+    return false;
+}
+
+Result<bool> ensureMessageMediaColumns(Database &db)
+{
+    struct Column
+    {
+        const char *name;
+        const char *sql;
+    };
+    static const Column columns[] = {
+        {"kind", "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'"},
+        {"media_id", "ALTER TABLE messages ADD COLUMN media_id TEXT NOT NULL DEFAULT ''"},
+        {"media_name", "ALTER TABLE messages ADD COLUMN media_name TEXT NOT NULL DEFAULT ''"},
+        {"media_size", "ALTER TABLE messages ADD COLUMN media_size INTEGER NOT NULL DEFAULT 0"},
+        {"media_duration_ms",
+         "ALTER TABLE messages ADD COLUMN media_duration_ms INTEGER NOT NULL DEFAULT 0"},
+    };
+    for (const Column &column : columns) {
+        if (messageColumnExists(db, column.name)) {
+            continue;
+        }
+        if (auto added = db.exec(QByteArray(column.sql)); added.isError()) {
+            return added;
+        }
+    }
+    return Result<bool>::ok(true);
+}
+
+// Phase 3 additions. A database rewound by a test may already have some of
+// these columns, so PRAGMA decides per column instead of failing the ALTER.
+Result<bool> ensureActionColumns(Database &db)
+{
+    struct Column
+    {
+        const char *table;
+        const char *name;
+        const char *sql;
+    };
+    static const Column columns[] = {
+        {"messages", "edited_at",
+         "ALTER TABLE messages ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0"},
+        {"messages", "forwarded_from",
+         "ALTER TABLE messages ADD COLUMN forwarded_from TEXT NOT NULL DEFAULT ''"},
+        {"chats", "muted_until",
+         "ALTER TABLE chats ADD COLUMN muted_until INTEGER NOT NULL DEFAULT 0"},
+        {"chats", "archived", "ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"},
+    };
+    for (const Column &column : columns) {
+        detail::Statement info(db.handle(),
+                               QStringLiteral("PRAGMA table_info(%1)")
+                                   .arg(QString::fromLatin1(column.table))
+                                   .toUtf8()
+                                   .constData());
+        if (!info.isOk()) {
+            continue;
+        }
+        bool exists = false;
+        int rc = info.step();
+        while (rc == SQLITE_ROW) {
+            if (info.text(1) == QLatin1String(column.name)) {
+                exists = true;
+                break;
+            }
+            rc = info.step();
+        }
+        if (exists) {
+            continue;
+        }
+        if (auto added = db.exec(QByteArray(column.sql)); added.isError()) {
+            return added;
+        }
+    }
+    return Result<bool>::ok(true);
+}
 
 // v1 stored the chat preview as plaintext. Seal every legacy value that is
 // not already an AEAD blob; a second run is a no-op.
@@ -211,6 +446,16 @@ Result<bool> Migrations::apply(Database &db, const QString &backupsDir)
         }
         const int targetVersion = migration.version;
         auto result = db.transaction([&](Database &tx) {
+            if (targetVersion >= 6) {
+                if (auto columns = ensureMessageMediaColumns(tx); columns.isError()) {
+                    return columns;
+                }
+            }
+            if (targetVersion >= 7) {
+                if (auto columns = ensureActionColumns(tx); columns.isError()) {
+                    return columns;
+                }
+            }
             if (auto executed = tx.exec(QByteArray(migration.sql)); executed.isError()) {
                 return executed;
             }

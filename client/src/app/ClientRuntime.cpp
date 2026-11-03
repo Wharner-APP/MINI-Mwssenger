@@ -6,8 +6,15 @@
 #include "net/ApiClient.h"
 #include "net/TlsPin.h"
 #include "net/WsClient.h"
+#include "services/ApiChannelApi.h"
+#include "services/ApiGroupApi.h"
 #include "services/ChatService.h"
 #include "services/ContactService.h"
+#include "services/ChannelService.h"
+#include "services/GroupService.h"
+#include "services/MediaService.h"
+#include "services/StickerService.h"
+#include "services/MediaTransport.h"
 #include "services/MessageService.h"
 #include "services/SearchService.h"
 #include "services/SessionCrypto.h"
@@ -92,6 +99,29 @@ Result<bool> ClientRuntime::start(const Config &config)
     m_messages->setSelfLogin(config.selfLogin);
     m_messages->setCryptoSession(m_crypto);
     m_messages->setTransport(m_transport);
+
+    m_mediaTransport = new services::ApiMediaTransport(m_api, this);
+    m_media = new services::MediaService(this);
+    m_media->setStorage(m_storage);
+    m_media->setTransport(m_mediaTransport);
+    m_media->setCacheRoot(QDir(config.dataDir).filePath(QStringLiteral("media")));
+
+    m_stickers = new services::StickerService(this);
+    m_stickers->setUserDir(QDir(config.dataDir).filePath(QStringLiteral("stickers")));
+
+    m_groupApi = new services::ApiGroupApi(m_api);
+    m_groups = new services::GroupService(m_storage, this);
+    m_groups->setApi(m_groupApi);
+    m_groups->setMessageService(m_messages);
+    m_groups->setSelfIdentity(config.selfUserId, config.selfLogin);
+    m_messages->setGroupCrypto(m_groups);
+
+    m_channelApi = new services::ApiChannelApi(m_api);
+    m_channels = new services::ChannelService(m_storage, this);
+    m_channels->setApi(m_channelApi);
+    m_channels->setMessageService(m_messages);
+    m_channels->setSelfIdentity(config.selfUserId, config.selfLogin);
+    m_messages->setChannelCrypto(m_channels);
 
     m_chat = new services::ChatService(m_storage, this);
     m_chat->setSelfLogin(config.selfLogin);
@@ -209,9 +239,16 @@ void ClientRuntime::stop()
     }
     delete m_transport;
     m_transport = nullptr;
+    delete m_mediaTransport;
+    m_mediaTransport = nullptr;
+    delete m_media;
+    m_media = nullptr;
+    delete m_groupApi;
+    m_groupApi = nullptr;
     for (QObject *child : {static_cast<QObject *>(m_api), static_cast<QObject *>(m_ws),
                            static_cast<QObject *>(m_messages), static_cast<QObject *>(m_chat),
-                           static_cast<QObject *>(m_contacts), static_cast<QObject *>(m_search)}) {
+                           static_cast<QObject *>(m_contacts), static_cast<QObject *>(m_groups),
+                           static_cast<QObject *>(m_search)}) {
         delete child;
     }
     delete m_crypto;
@@ -219,8 +256,10 @@ void ClientRuntime::stop()
     m_api = nullptr;
     m_ws = nullptr;
     m_messages = nullptr;
+    m_media = nullptr;
     m_chat = nullptr;
     m_contacts = nullptr;
+    m_groups = nullptr;
     m_search = nullptr;
     m_crypto = nullptr;
     m_storage = nullptr;

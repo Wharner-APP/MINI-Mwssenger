@@ -25,6 +25,10 @@ public:
 signals:
     void chatSelected(const QString &chatId);
     void newChatRequested();
+    void newGroupRequested();
+    void newChannelRequested();
+    void joinGroupRequested();
+    void joinChannelRequested();
 
 private:
     void refreshIcons();

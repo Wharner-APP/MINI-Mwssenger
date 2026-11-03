@@ -17,6 +17,8 @@ struct Chat
     bool pinned = false;
     bool muted = false;
     qint64 updatedAt = 0;
+    qint64 mutedUntil = 0; // 0 with muted=true means "forever"
+    bool archived = false;
 };
 
 } // namespace mini

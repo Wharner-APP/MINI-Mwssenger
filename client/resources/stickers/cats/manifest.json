@@ -1,0 +1,48 @@
+{
+  "id": "mini.cats",
+  "title": "Кошки",
+  "author": "MINI",
+  "cover": "cats-happy.png",
+  "stickers": [
+    {
+      "id": "cats-happy",
+      "title": "Радость",
+      "file": "cats-happy.png"
+    },
+    {
+      "id": "cats-love",
+      "title": "Любовь",
+      "file": "cats-love.png"
+    },
+    {
+      "id": "cats-laugh",
+      "title": "Смех",
+      "file": "cats-laugh.png"
+    },
+    {
+      "id": "cats-sad",
+      "title": "Грусть",
+      "file": "cats-sad.png"
+    },
+    {
+      "id": "cats-angry",
+      "title": "Злость",
+      "file": "cats-angry.png"
+    },
+    {
+      "id": "cats-wink",
+      "title": "Подмигивание",
+      "file": "cats-wink.png"
+    },
+    {
+      "id": "cats-surprised",
+      "title": "Удивление",
+      "file": "cats-surprised.png"
+    },
+    {
+      "id": "cats-cool",
+      "title": "Круто",
+      "file": "cats-cool.png"
+    }
+  ]
+}

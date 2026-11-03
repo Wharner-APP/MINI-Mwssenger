@@ -229,7 +229,11 @@ void Application::openMainWindow()
     if (m_runtime) {
         m_mainWindow->setChatService(m_runtime->chatService());
         m_mainWindow->setContactService(m_runtime->contactService());
+        m_mainWindow->setGroupService(m_runtime->groupService());
+        m_mainWindow->setChannelService(m_runtime->channelService());
         m_mainWindow->setMessageService(m_runtime->messageService());
+        m_mainWindow->setMediaService(m_runtime->mediaService());
+        m_mainWindow->setStickerService(m_runtime->stickerService());
         m_mainWindow->setSearchService(m_runtime->searchService());
         m_mainWindow->setStorageWorker(m_runtime->storage());
         m_mainWindow->setWsClient(m_runtime->ws());
@@ -247,7 +251,11 @@ void Application::signOut()
     if (m_mainWindow) {
         m_mainWindow->setChatService(nullptr);
         m_mainWindow->setContactService(nullptr);
+        m_mainWindow->setGroupService(nullptr);
+        m_mainWindow->setChannelService(nullptr);
         m_mainWindow->setMessageService(nullptr);
+        m_mainWindow->setMediaService(nullptr);
+        m_mainWindow->setStickerService(nullptr);
         m_mainWindow->setSearchService(nullptr);
         m_mainWindow->setStorageWorker(nullptr);
         m_mainWindow->setWsClient(nullptr);
@@ -298,6 +306,7 @@ void Application::startRuntime()
     runtime.refreshToken = session.refreshToken;
     runtime.deviceId = session.deviceId;
     runtime.selfLogin = session.login;
+    runtime.selfUserId = session.userId;
     runtime.kenc = m_auth->authService()->fileKeys().kenc;
 
     const Result<bool> started = m_runtime->start(runtime);
@@ -321,7 +330,10 @@ void Application::startRuntime()
             if (m_mainWindow) {
                 m_mainWindow->setChatService(nullptr);
                 m_mainWindow->setContactService(nullptr);
+                m_mainWindow->setGroupService(nullptr);
+        m_mainWindow->setChannelService(nullptr);
                 m_mainWindow->setMessageService(nullptr);
+                m_mainWindow->setMediaService(nullptr);
                 m_mainWindow->setSearchService(nullptr);
                 m_mainWindow->setStorageWorker(nullptr);
                 m_mainWindow->setWsClient(nullptr);

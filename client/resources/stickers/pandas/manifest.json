@@ -1,0 +1,48 @@
+{
+  "id": "mini.pandas",
+  "title": "Панды",
+  "author": "MINI",
+  "cover": "pandas-happy.png",
+  "stickers": [
+    {
+      "id": "pandas-happy",
+      "title": "Радость",
+      "file": "pandas-happy.png"
+    },
+    {
+      "id": "pandas-love",
+      "title": "Любовь",
+      "file": "pandas-love.png"
+    },
+    {
+      "id": "pandas-laugh",
+      "title": "Смех",
+      "file": "pandas-laugh.png"
+    },
+    {
+      "id": "pandas-sad",
+      "title": "Грусть",
+      "file": "pandas-sad.png"
+    },
+    {
+      "id": "pandas-angry",
+      "title": "Злость",
+      "file": "pandas-angry.png"
+    },
+    {
+      "id": "pandas-wink",
+      "title": "Подмигивание",
+      "file": "pandas-wink.png"
+    },
+    {
+      "id": "pandas-surprised",
+      "title": "Удивление",
+      "file": "pandas-surprised.png"
+    },
+    {
+      "id": "pandas-cool",
+      "title": "Круто",
+      "file": "pandas-cool.png"
+    }
+  ]
+}

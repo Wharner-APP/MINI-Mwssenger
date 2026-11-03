@@ -17,6 +17,7 @@
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFrame>
+#include <QItemSelectionModel>
 #include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
@@ -57,6 +58,11 @@ private slots:
     void draftSignalAndDraftText();
     void messageListStaysVirtualisedAndScrolls();
     void ctrlKSearchFindsChatAndMessage();
+    void chatSearchJumpsAndHighlightsMatches();
+    void jumpToMessageHighlightsTheRow();
+    void multiSelectCollectsIdsAndEscapes();
+    void pinnedBannerShowsAndHides();
+    void formattedMessageExposesEditedAndForwardedRoles();
 };
 
 namespace {
@@ -159,12 +165,13 @@ void TestMessageUi::chatMenuHasEightActions()
     list.setChats({makeChat(QStringLiteral("a"), QStringLiteral("Alice"), 0, false, false)});
 
     QScopedPointer<QMenu> menu(list.buildChatMenu(QStringLiteral("a")));
-    QCOMPARE(menu->actions().size(), 8);
+    QCOMPARE(menu->actions().size(), 9);
     const QStringList expected{
         QStringLiteral("chatOpenAction"),      QStringLiteral("chatMarkReadAction"),
-        QStringLiteral("chatPinAction"),       QStringLiteral("chatMuteAction"),
-        QStringLiteral("chatCopyLoginAction"), QStringLiteral("chatCopyTitleAction"),
-        QStringLiteral("chatClearHistoryAction"), QStringLiteral("chatDeleteAction")};
+        QStringLiteral("chatPinAction"),       QStringLiteral("chatArchiveAction"),
+        QStringLiteral("chatMuteAction"),      QStringLiteral("chatCopyLoginAction"),
+        QStringLiteral("chatCopyTitleAction"), QStringLiteral("chatClearHistoryAction"),
+        QStringLiteral("chatDeleteAction")};
     QStringList actual;
     for (QAction *action : menu->actions()) {
         actual.append(action->objectName());
@@ -179,18 +186,40 @@ void TestMessageUi::chatMenuActionsEmitState()
     QScopedPointer<QMenu> menu(list.buildChatMenu(QStringLiteral("a")));
 
     QSignalSpy pinned(&list, &ChatList::pinToggled);
-    QSignalSpy mute(&list, &ChatList::muteToggled);
+    QSignalSpy mute(&list, &ChatList::muteUntilRequested);
+    QSignalSpy archived(&list, &ChatList::archiveToggled);
     QSignalSpy read(&list, &ChatList::markReadRequested);
 
     menu->actions().at(2)->trigger();
     menu->actions().at(3)->trigger();
+    QAction *muteAction = nullptr;
+    for (QAction *action : menu->actions()) {
+        if (action->objectName() == QLatin1String("chatMuteAction")) {
+            muteAction = action;
+            break;
+        }
+    }
+    QVERIFY(muteAction);
+    QVERIFY(muteAction->menu());
+    QAction *muteForever = nullptr;
+    for (QAction *action : muteAction->menu()->actions()) {
+        if (action->text().contains(QLatin1String("Forever"))) {
+            muteForever = action;
+            break;
+        }
+    }
+    QVERIFY(muteForever);
+    muteForever->trigger();
     menu->actions().at(1)->trigger();
 
     QCOMPARE(pinned.count(), 1);
     QCOMPARE(pinned.first().at(0).toString(), QStringLiteral("a"));
     QCOMPARE(pinned.first().at(1).toBool(), true);
+    QCOMPARE(archived.count(), 1);
+    QCOMPARE(archived.first().at(1).toBool(), true);
     QCOMPARE(mute.count(), 1);
-    QCOMPARE(mute.first().at(1).toBool(), true);
+    QCOMPARE(mute.first().at(0).toString(), QStringLiteral("a"));
+    QCOMPARE(mute.first().at(1).toLongLong(), qint64(-1));
     QCOMPARE(read.count(), 1);
 }
 
@@ -389,6 +418,106 @@ void TestMessageUi::ctrlKSearchFindsChatAndMessage()
     QCOMPARE(messageSelected.count(), 1);
     QCOMPARE(messageSelected.first().at(0).toString(), QStringLiteral("chat-1"));
     QCOMPARE(messageSelected.first().at(1).toString(), QStringLiteral("m1"));
+}
+
+void TestMessageUi::chatSearchJumpsAndHighlightsMatches()
+{
+    ChatView view;
+    view.setChat(makeChat(QStringLiteral("chat"), QStringLiteral("Alice"), 0, false, false));
+    view.show();
+    QCoreApplication::processEvents();
+    view.setMessages({makeMessage(QStringLiteral("m1"), QStringLiteral("hello needle"), false,
+                                  MessageState::Received, 100),
+                      makeMessage(QStringLiteral("m2"), QStringLiteral("nothing here"), true,
+                                  MessageState::Sent, 200),
+                      makeMessage(QStringLiteral("m3"), QStringLiteral("needle again"), false,
+                                  MessageState::Received, 300)});
+    view.openSearch();
+    QVERIFY(view.searchBar()->isVisible());
+    view.searchField()->setText(QStringLiteral("needle"));
+    QCOMPARE(view.searchMatchCount(), 2);
+    QCOMPARE(view.searchCurrentId(), QStringLiteral("m1"));
+    const int row = view.messageModel()->indexOf(QStringLiteral("m3"));
+    QVERIFY(view.messageModel()
+                ->data(view.messageModel()->index(row, 0),
+                       MessageListModel::SearchMatchRole)
+                .toBool());
+    view.searchNext();
+    QCOMPARE(view.searchCurrentId(), QStringLiteral("m3"));
+    view.searchPrevious();
+    QCOMPARE(view.searchCurrentId(), QStringLiteral("m1"));
+    view.closeSearch();
+    QCOMPARE(view.searchMatchCount(), 0);
+}
+
+void TestMessageUi::jumpToMessageHighlightsTheRow()
+{
+    ChatView view;
+    view.setChat(makeChat(QStringLiteral("chat"), QStringLiteral("Alice"), 0, false, false));
+    view.setMessages({makeMessage(QStringLiteral("m1"), QStringLiteral("a"), false,
+                                  MessageState::Received, 100),
+                      makeMessage(QStringLiteral("m2"), QStringLiteral("b"), false,
+                                  MessageState::Received, 200)});
+    view.jumpToMessage(QStringLiteral("m2"));
+    const int row = view.messageModel()->indexOf(QStringLiteral("m2"));
+    QVERIFY(view.messageModel()
+                ->data(view.messageModel()->index(row, 0),
+                       MessageListModel::SearchMatchRole)
+                .toBool());
+}
+
+void TestMessageUi::multiSelectCollectsIdsAndEscapes()
+{
+    ChatView view;
+    view.setChat(makeChat(QStringLiteral("chat"), QStringLiteral("Alice"), 0, false, false));
+    view.show();
+    QCoreApplication::processEvents();
+    view.setMessages({makeMessage(QStringLiteral("m1"), QStringLiteral("a"), true,
+                                  MessageState::Sent, 100),
+                      makeMessage(QStringLiteral("m2"), QStringLiteral("b"), true,
+                                  MessageState::Sent, 200)});
+    view.enterMultiSelect(QStringLiteral("m1"));
+    QVERIFY(view.multiSelectActive());
+    QVERIFY(view.multiToolbar()->isVisible());
+    view.messageView()->selectionModel()->select(
+        view.messageModel()->index(view.messageModel()->indexOf(QStringLiteral("m2")), 0),
+        QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QCOMPARE(view.selectedClientMsgIds().size(), 2);
+    QTest::keyClick(&view, Qt::Key_Escape);
+    QVERIFY(!view.multiSelectActive());
+    QVERIFY(view.selectedClientMsgIds().isEmpty());
+}
+
+void TestMessageUi::pinnedBannerShowsAndHides()
+{
+    ChatView view;
+    view.setChat(makeChat(QStringLiteral("chat"), QStringLiteral("Alice"), 0, false, false));
+    view.show();
+    QCoreApplication::processEvents();
+    Message pinned = makeMessage(QStringLiteral("m1"), QStringLiteral("pin me"), false,
+                                 MessageState::Received, 100);
+    view.setPinnedMessages({pinned});
+    QCOMPARE(view.pinnedCount(), 1);
+    QVERIFY(view.pinnedBanner()->isVisible());
+    view.setPinnedMessages({});
+    QCOMPARE(view.pinnedCount(), 0);
+    QVERIFY(!view.pinnedBanner()->isVisible());
+}
+
+void TestMessageUi::formattedMessageExposesEditedAndForwardedRoles()
+{
+    ChatView view;
+    view.setChat(makeChat(QStringLiteral("chat"), QStringLiteral("Alice"), 0, false, false));
+    Message message = makeMessage(QStringLiteral("m1"),
+                                  QStringLiteral("**bold** @alice"),
+                                  false, MessageState::Received, 100);
+    message.editedAt = 1234;
+    message.forwardedFrom = QStringLiteral("bob");
+    view.setMessages({message});
+    const QModelIndex index = view.messageModel()->index(0, 0);
+    QVERIFY(view.messageModel()->data(index, MessageListModel::EditedRole).toBool());
+    QCOMPARE(view.messageModel()->data(index, MessageListModel::ForwardedRole).toString(),
+             QStringLiteral("bob"));
 }
 
 QTEST_MAIN(TestMessageUi)

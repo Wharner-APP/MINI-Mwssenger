@@ -1,0 +1,892 @@
+{
+  "categories": [
+    {
+      "id": "smileys",
+      "title": "Смайлы",
+      "emojis": [
+        {
+          "char": "😀",
+          "name": "улыбка радость",
+          "keywords": "grin smile happy"
+        },
+        {
+          "char": "😃",
+          "name": "смех радость",
+          "keywords": "smile happy"
+        },
+        {
+          "char": "😄",
+          "name": "смех веселье",
+          "keywords": "laugh happy"
+        },
+        {
+          "char": "😁",
+          "name": "ухмылка",
+          "keywords": "grin"
+        },
+        {
+          "char": "😆",
+          "name": "хохот",
+          "keywords": "laugh"
+        },
+        {
+          "char": "😅",
+          "name": "пот смех",
+          "keywords": "sweat smile"
+        },
+        {
+          "char": "🤣",
+          "name": "катаюсь со смеху",
+          "keywords": "rofl"
+        },
+        {
+          "char": "😂",
+          "name": "слёзы смех",
+          "keywords": "joy tears"
+        },
+        {
+          "char": "🙂",
+          "name": "легкая улыбка",
+          "keywords": "slight smile"
+        },
+        {
+          "char": "🙃",
+          "name": "перевёрнутый смайл",
+          "keywords": "upside down"
+        },
+        {
+          "char": "😉",
+          "name": "подмигивание",
+          "keywords": "wink"
+        },
+        {
+          "char": "😊",
+          "name": "улыбка румянец",
+          "keywords": "blush"
+        },
+        {
+          "char": "😇",
+          "name": "ангел",
+          "keywords": "angel"
+        },
+        {
+          "char": "🥰",
+          "name": "влюблённость",
+          "keywords": "love hearts"
+        },
+        {
+          "char": "😍",
+          "name": "влюблённые глаза",
+          "keywords": "heart eyes"
+        },
+        {
+          "char": "🤩",
+          "name": "звёздные глаза",
+          "keywords": "star struck"
+        },
+        {
+          "char": "😘",
+          "name": "поцелуй",
+          "keywords": "kiss"
+        },
+        {
+          "char": "😗",
+          "name": "поцелуй губы",
+          "keywords": "kiss"
+        },
+        {
+          "char": "😋",
+          "name": "вкусно",
+          "keywords": "yum"
+        },
+        {
+          "char": "😛",
+          "name": "язык",
+          "keywords": "tongue"
+        },
+        {
+          "char": "🤪",
+          "name": "сумасшествие",
+          "keywords": "crazy"
+        },
+        {
+          "char": "🤨",
+          "name": "бровь",
+          "keywords": "raised eyebrow"
+        },
+        {
+          "char": "🧐",
+          "name": "монокль",
+          "keywords": "monocle"
+        },
+        {
+          "char": "🤓",
+          "name": "ботаник",
+          "keywords": "nerd"
+        }
+      ]
+    },
+    {
+      "id": "gestures",
+      "title": "Жесты",
+      "emojis": [
+        {
+          "char": "👋",
+          "name": "привет рука",
+          "keywords": "wave hello"
+        },
+        {
+          "char": "🤚",
+          "name": "ладонь",
+          "keywords": "hand"
+        },
+        {
+          "char": "✋",
+          "name": "стоп",
+          "keywords": "stop hand"
+        },
+        {
+          "char": "🖖",
+          "name": "вулканский салют",
+          "keywords": "vulcan"
+        },
+        {
+          "char": "👌",
+          "name": "окей",
+          "keywords": "ok"
+        },
+        {
+          "char": "🤌",
+          "name": "щепоть",
+          "keywords": "pinch"
+        },
+        {
+          "char": "🤏",
+          "name": "чуть-чуть",
+          "keywords": "pinch"
+        },
+        {
+          "char": "✌️",
+          "name": "victory мир",
+          "keywords": "victory peace"
+        },
+        {
+          "char": "🤞",
+          "name": "скрещённые пальцы",
+          "keywords": "fingers crossed"
+        },
+        {
+          "char": "🤟",
+          "name": "люблю",
+          "keywords": "love you"
+        },
+        {
+          "char": "🤘",
+          "name": "рок",
+          "keywords": "rock"
+        },
+        {
+          "char": "🤙",
+          "name": "позвони",
+          "keywords": "call me"
+        },
+        {
+          "char": "👈",
+          "name": "влево",
+          "keywords": "left"
+        },
+        {
+          "char": "👉",
+          "name": "вправо",
+          "keywords": "right"
+        },
+        {
+          "char": "👆",
+          "name": "вверх",
+          "keywords": "up"
+        },
+        {
+          "char": "👇",
+          "name": "вниз",
+          "keywords": "down"
+        },
+        {
+          "char": "👍",
+          "name": "палец вверх",
+          "keywords": "thumbs up"
+        },
+        {
+          "char": "👎",
+          "name": "палец вниз",
+          "keywords": "thumbs down"
+        },
+        {
+          "char": "👏",
+          "name": "аплодисменты",
+          "keywords": "clap"
+        },
+        {
+          "char": "🙌",
+          "name": "ура",
+          "keywords": "raise hands"
+        },
+        {
+          "char": "🤝",
+          "name": "рукопожатие",
+          "keywords": "handshake"
+        },
+        {
+          "char": "🙏",
+          "name": "спасибо",
+          "keywords": "pray thanks"
+        }
+      ]
+    },
+    {
+      "id": "animals",
+      "title": "Животные",
+      "emojis": [
+        {
+          "char": "🐶",
+          "name": "собака",
+          "keywords": "dog"
+        },
+        {
+          "char": "🐱",
+          "name": "кошка",
+          "keywords": "cat"
+        },
+        {
+          "char": "🐭",
+          "name": "мышь",
+          "keywords": "mouse"
+        },
+        {
+          "char": "🐹",
+          "name": "хомяк",
+          "keywords": "hamster"
+        },
+        {
+          "char": "🐰",
+          "name": "кролик",
+          "keywords": "rabbit"
+        },
+        {
+          "char": "🦊",
+          "name": "лиса",
+          "keywords": "fox"
+        },
+        {
+          "char": "🐻",
+          "name": "медведь",
+          "keywords": "bear"
+        },
+        {
+          "char": "🐼",
+          "name": "панда",
+          "keywords": "panda"
+        },
+        {
+          "char": "🐨",
+          "name": "коала",
+          "keywords": "koala"
+        },
+        {
+          "char": "🐯",
+          "name": "тигр",
+          "keywords": "tiger"
+        },
+        {
+          "char": "🦁",
+          "name": "лев",
+          "keywords": "lion"
+        },
+        {
+          "char": "🐮",
+          "name": "корова",
+          "keywords": "cow"
+        },
+        {
+          "char": "🐷",
+          "name": "свинья",
+          "keywords": "pig"
+        },
+        {
+          "char": "🐸",
+          "name": "лягушка",
+          "keywords": "frog"
+        },
+        {
+          "char": "🐵",
+          "name": "обезьяна",
+          "keywords": "monkey"
+        },
+        {
+          "char": "🐔",
+          "name": "курица",
+          "keywords": "chicken"
+        },
+        {
+          "char": "🐧",
+          "name": "пингвин",
+          "keywords": "penguin"
+        },
+        {
+          "char": "🐦",
+          "name": "птица",
+          "keywords": "bird"
+        },
+        {
+          "char": "🦄",
+          "name": "единорог",
+          "keywords": "unicorn"
+        },
+        {
+          "char": "🐝",
+          "name": "пчела",
+          "keywords": "bee"
+        },
+        {
+          "char": "🦋",
+          "name": "бабочка",
+          "keywords": "butterfly"
+        },
+        {
+          "char": "🐢",
+          "name": "черепаха",
+          "keywords": "turtle"
+        }
+      ]
+    },
+    {
+      "id": "food",
+      "title": "Еда",
+      "emojis": [
+        {
+          "char": "🍎",
+          "name": "яблоко",
+          "keywords": "apple"
+        },
+        {
+          "char": "🍐",
+          "name": "груша",
+          "keywords": "pear"
+        },
+        {
+          "char": "🍊",
+          "name": "апельсин",
+          "keywords": "orange"
+        },
+        {
+          "char": "🍋",
+          "name": "лимон",
+          "keywords": "lemon"
+        },
+        {
+          "char": "🍌",
+          "name": "банан",
+          "keywords": "banana"
+        },
+        {
+          "char": "🍉",
+          "name": "арбуз",
+          "keywords": "watermelon"
+        },
+        {
+          "char": "🍇",
+          "name": "виноград",
+          "keywords": "grapes"
+        },
+        {
+          "char": "🍓",
+          "name": "клубника",
+          "keywords": "strawberry"
+        },
+        {
+          "char": "🍒",
+          "name": "вишня",
+          "keywords": "cherry"
+        },
+        {
+          "char": "🍑",
+          "name": "персик",
+          "keywords": "peach"
+        },
+        {
+          "char": "🥑",
+          "name": "авокадо",
+          "keywords": "avocado"
+        },
+        {
+          "char": "🍅",
+          "name": "помидор",
+          "keywords": "tomato"
+        },
+        {
+          "char": "🌽",
+          "name": "кукуруза",
+          "keywords": "corn"
+        },
+        {
+          "char": "🍞",
+          "name": "хлеб",
+          "keywords": "bread"
+        },
+        {
+          "char": "🧀",
+          "name": "сыр",
+          "keywords": "cheese"
+        },
+        {
+          "char": "🍕",
+          "name": "пицца",
+          "keywords": "pizza"
+        },
+        {
+          "char": "🍔",
+          "name": "бургер",
+          "keywords": "burger"
+        },
+        {
+          "char": "🍟",
+          "name": "картошка",
+          "keywords": "fries"
+        },
+        {
+          "char": "🍣",
+          "name": "суши",
+          "keywords": "sushi"
+        },
+        {
+          "char": "🍦",
+          "name": "мороженое",
+          "keywords": "ice cream"
+        },
+        {
+          "char": "🍩",
+          "name": "пончик",
+          "keywords": "donut"
+        },
+        {
+          "char": "☕",
+          "name": "кофе",
+          "keywords": "coffee"
+        }
+      ]
+    },
+    {
+      "id": "travel",
+      "title": "Места",
+      "emojis": [
+        {
+          "char": "🚗",
+          "name": "машина",
+          "keywords": "car"
+        },
+        {
+          "char": "🚕",
+          "name": "такси",
+          "keywords": "taxi"
+        },
+        {
+          "char": "🚌",
+          "name": "автобус",
+          "keywords": "bus"
+        },
+        {
+          "char": "🚎",
+          "name": "троллейбус",
+          "keywords": "trolleybus"
+        },
+        {
+          "char": "🚓",
+          "name": "полиция",
+          "keywords": "police"
+        },
+        {
+          "char": "🚑",
+          "name": "скорая",
+          "keywords": "ambulance"
+        },
+        {
+          "char": "🚒",
+          "name": "пожарная",
+          "keywords": "fire truck"
+        },
+        {
+          "char": "🚲",
+          "name": "велосипед",
+          "keywords": "bike"
+        },
+        {
+          "char": "🛴",
+          "name": "самокат",
+          "keywords": "scooter"
+        },
+        {
+          "char": "✈️",
+          "name": "самолёт",
+          "keywords": "plane"
+        },
+        {
+          "char": "🚀",
+          "name": "ракета",
+          "keywords": "rocket"
+        },
+        {
+          "char": "🚁",
+          "name": "вертолёт",
+          "keywords": "helicopter"
+        },
+        {
+          "char": "🚂",
+          "name": "поезд",
+          "keywords": "train"
+        },
+        {
+          "char": "🚢",
+          "name": "корабль",
+          "keywords": "ship"
+        },
+        {
+          "char": "🏠",
+          "name": "дом",
+          "keywords": "house"
+        },
+        {
+          "char": "🏢",
+          "name": "здание",
+          "keywords": "building"
+        },
+        {
+          "char": "🏫",
+          "name": "школа",
+          "keywords": "school"
+        },
+        {
+          "char": "🏥",
+          "name": "больница",
+          "keywords": "hospital"
+        },
+        {
+          "char": "🌍",
+          "name": "земля",
+          "keywords": "earth"
+        },
+        {
+          "char": "🌙",
+          "name": "луна",
+          "keywords": "moon"
+        },
+        {
+          "char": "⭐",
+          "name": "звезда",
+          "keywords": "star"
+        },
+        {
+          "char": "🌈",
+          "name": "радуга",
+          "keywords": "rainbow"
+        }
+      ]
+    },
+    {
+      "id": "objects",
+      "title": "Предметы",
+      "emojis": [
+        {
+          "char": "📱",
+          "name": "телефон",
+          "keywords": "phone"
+        },
+        {
+          "char": "💻",
+          "name": "ноутбук",
+          "keywords": "laptop"
+        },
+        {
+          "char": "⌨️",
+          "name": "клавиатура",
+          "keywords": "keyboard"
+        },
+        {
+          "char": "🖥️",
+          "name": "компьютер",
+          "keywords": "desktop"
+        },
+        {
+          "char": "🖱️",
+          "name": "мышь",
+          "keywords": "mouse"
+        },
+        {
+          "char": "🎮",
+          "name": "геймпад",
+          "keywords": "gamepad"
+        },
+        {
+          "char": "🎧",
+          "name": "наушники",
+          "keywords": "headphones"
+        },
+        {
+          "char": "📷",
+          "name": "камера",
+          "keywords": "camera"
+        },
+        {
+          "char": "📺",
+          "name": "телевизор",
+          "keywords": "tv"
+        },
+        {
+          "char": "💡",
+          "name": "идея лампа",
+          "keywords": "idea bulb"
+        },
+        {
+          "char": "🔋",
+          "name": "батарея",
+          "keywords": "battery"
+        },
+        {
+          "char": "💎",
+          "name": "алмаз",
+          "keywords": "diamond"
+        },
+        {
+          "char": "🔑",
+          "name": "ключ",
+          "keywords": "key"
+        },
+        {
+          "char": "🔒",
+          "name": "замок",
+          "keywords": "lock"
+        },
+        {
+          "char": "📚",
+          "name": "книги",
+          "keywords": "books"
+        },
+        {
+          "char": "✏️",
+          "name": "карандаш",
+          "keywords": "pencil"
+        },
+        {
+          "char": "📝",
+          "name": "заметка",
+          "keywords": "note"
+        },
+        {
+          "char": "📅",
+          "name": "календарь",
+          "keywords": "calendar"
+        },
+        {
+          "char": "⏰",
+          "name": "будильник",
+          "keywords": "alarm"
+        },
+        {
+          "char": "🎁",
+          "name": "подарок",
+          "keywords": "gift"
+        },
+        {
+          "char": "🎈",
+          "name": "шарик",
+          "keywords": "balloon"
+        },
+        {
+          "char": "🎉",
+          "name": "праздник",
+          "keywords": "party"
+        }
+      ]
+    },
+    {
+      "id": "symbols",
+      "title": "Символы",
+      "emojis": [
+        {
+          "char": "❤️",
+          "name": "сердце любовь",
+          "keywords": "heart love"
+        },
+        {
+          "char": "🧡",
+          "name": "оранжевое сердце",
+          "keywords": "orange heart"
+        },
+        {
+          "char": "💛",
+          "name": "жёлтое сердце",
+          "keywords": "yellow heart"
+        },
+        {
+          "char": "💚",
+          "name": "зелёное сердце",
+          "keywords": "green heart"
+        },
+        {
+          "char": "💙",
+          "name": "синее сердце",
+          "keywords": "blue heart"
+        },
+        {
+          "char": "💜",
+          "name": "фиолетовое сердце",
+          "keywords": "purple heart"
+        },
+        {
+          "char": "🖤",
+          "name": "чёрное сердце",
+          "keywords": "black heart"
+        },
+        {
+          "char": "🤍",
+          "name": "белое сердце",
+          "keywords": "white heart"
+        },
+        {
+          "char": "💔",
+          "name": "разбитое сердце",
+          "keywords": "broken heart"
+        },
+        {
+          "char": "💯",
+          "name": "сто",
+          "keywords": "hundred"
+        },
+        {
+          "char": "✅",
+          "name": "галочка",
+          "keywords": "check"
+        },
+        {
+          "char": "❌",
+          "name": "крестик",
+          "keywords": "cross"
+        },
+        {
+          "char": "❗",
+          "name": "восклицание",
+          "keywords": "exclamation"
+        },
+        {
+          "char": "❓",
+          "name": "вопрос",
+          "keywords": "question"
+        },
+        {
+          "char": "⚠️",
+          "name": "внимание",
+          "keywords": "warning"
+        },
+        {
+          "char": "🔥",
+          "name": "огонь",
+          "keywords": "fire"
+        },
+        {
+          "char": "✨",
+          "name": "искры",
+          "keywords": "sparkles"
+        },
+        {
+          "char": "💥",
+          "name": "взрыв",
+          "keywords": "boom"
+        },
+        {
+          "char": "💤",
+          "name": "сон",
+          "keywords": "sleep"
+        },
+        {
+          "char": "🎵",
+          "name": "музыка",
+          "keywords": "music"
+        },
+        {
+          "char": "⚡",
+          "name": "молния",
+          "keywords": "lightning"
+        },
+        {
+          "char": "♻️",
+          "name": "переработка",
+          "keywords": "recycle"
+        }
+      ]
+    },
+    {
+      "id": "flags",
+      "title": "Флаги",
+      "emojis": [
+        {
+          "char": "🏳️",
+          "name": "белый флаг",
+          "keywords": "white flag"
+        },
+        {
+          "char": "🏴",
+          "name": "чёрный флаг",
+          "keywords": "black flag"
+        },
+        {
+          "char": "🏁",
+          "name": "финиш",
+          "keywords": "finish"
+        },
+        {
+          "char": "🚩",
+          "name": "красный флаг",
+          "keywords": "red flag"
+        },
+        {
+          "char": "🇷🇺",
+          "name": "россия",
+          "keywords": "russia"
+        },
+        {
+          "char": "🇰🇿",
+          "name": "казахстан",
+          "keywords": "kazakhstan"
+        },
+        {
+          "char": "🇧🇾",
+          "name": "беларусь",
+          "keywords": "belarus"
+        },
+        {
+          "char": "🇺🇸",
+          "name": "сша",
+          "keywords": "usa"
+        },
+        {
+          "char": "🇬🇧",
+          "name": "великобритания",
+          "keywords": "uk"
+        },
+        {
+          "char": "🇩🇪",
+          "name": "германия",
+          "keywords": "germany"
+        },
+        {
+          "char": "🇫🇷",
+          "name": "франция",
+          "keywords": "france"
+        },
+        {
+          "char": "🇯🇵",
+          "name": "япония",
+          "keywords": "japan"
+        }
+      ]
+    }
+  ]
+}

@@ -25,6 +25,9 @@ public:
     Result<bool> upsert(const Chat &chat);
     Result<bool> setPinned(const QString &chatId, bool pinned);
     Result<bool> setMuted(const QString &chatId, bool muted);
+    // §32.4: 0 clears mute, >0 mutes until that moment, -1 means forever.
+    Result<bool> setMutedUntil(const QString &chatId, qint64 untilMs);
+    Result<bool> setArchived(const QString &chatId, bool archived);
     Result<bool> remove(const QString &chatId);
     // Deletes the chat row but keeps its messages as orphans (§4.8).
     Result<bool> removeKeepingMessages(const QString &chatId);

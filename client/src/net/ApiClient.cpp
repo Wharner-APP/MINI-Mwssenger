@@ -10,6 +10,7 @@
 #include <QNetworkRequest>
 #include <QSslConfiguration>
 #include <QSslError>
+#include <QUrl>
 
 namespace mini::net {
 
@@ -152,6 +153,117 @@ QStringList stringList(const QJsonArray &array)
     return values;
 }
 
+GroupMemberInfo parseGroupMember(const QJsonObject &object)
+{
+    GroupMemberInfo member;
+    member.userId = firstString(object, {"user_id", "userId", "id"});
+    member.login = firstString(object, {"login"});
+    member.displayName = firstString(object, {"display_name", "displayName", "name"});
+    member.role = firstString(object, {"role"});
+    if (member.role.isEmpty()) {
+        member.role = QStringLiteral("member");
+    }
+    member.permissions = static_cast<quint32>(
+        object.value(QStringLiteral("permissions")).toDouble(0));
+    member.joinedAt = toInt64(object.value(QStringLiteral("joined_at")));
+    member.mutedUntil = toInt64(object.value(QStringLiteral("muted_until")));
+    return member;
+}
+
+GroupInfo parseGroup(const QJsonObject &object)
+{
+    GroupInfo group;
+    group.groupId = firstString(object, {"group_id", "id"});
+    group.title = firstString(object, {"title"});
+    group.about = firstString(object, {"about"});
+    group.avatarMedia = firstString(object, {"avatar_media"});
+    group.ownerId = firstString(object, {"owner_id"});
+    group.isPublic = object.value(QStringLiteral("is_public")).toBool();
+    group.slowModeSec = object.value(QStringLiteral("slow_mode_sec")).toInt();
+    group.joinByRequest = object.value(QStringLiteral("join_by_request")).toBool();
+    group.inviteToken = firstString(object, {"invite_token"});
+    group.inviteLink = firstString(object, {"invite_link"});
+    group.myRole = firstString(object, {"my_role"});
+    group.myPermissions = static_cast<quint32>(
+        object.value(QStringLiteral("my_permissions")).toDouble(0));
+    group.memberCount = object.value(QStringLiteral("member_count")).toInt();
+    group.createdAt = toInt64(object.value(QStringLiteral("created_at")));
+    group.updatedAt = toInt64(object.value(QStringLiteral("updated_at")));
+    group.requestStatus = firstString(object, {"request_status"});
+    const QJsonArray members = object.value(QStringLiteral("members")).toArray();
+    for (const QJsonValue &value : members) {
+        if (value.isObject()) {
+            group.members.append(parseGroupMember(value.toObject()));
+        }
+    }
+    if (group.memberCount == 0 && !group.members.isEmpty()) {
+        group.memberCount = group.members.size();
+    }
+    return group;
+}
+
+ChannelMemberInfo parseChannelMember(const QJsonObject &object)
+{
+    ChannelMemberInfo member;
+    member.userId = firstString(object, {"user_id", "userId", "id"});
+    member.login = firstString(object, {"login"});
+    member.displayName = firstString(object, {"display_name", "displayName", "name"});
+    member.role = firstString(object, {"role"});
+    if (member.role.isEmpty()) {
+        member.role = QStringLiteral("subscriber");
+    }
+    member.permissions = static_cast<quint32>(
+        object.value(QStringLiteral("permissions")).toDouble(0));
+    member.joinedAt = toInt64(object.value(QStringLiteral("joined_at")));
+    return member;
+}
+
+ChannelInfo parseChannel(const QJsonObject &object)
+{
+    ChannelInfo channel;
+    channel.channelId = firstString(object, {"channel_id", "id"});
+    channel.title = firstString(object, {"title"});
+    channel.about = firstString(object, {"about"});
+    channel.avatarMedia = firstString(object, {"avatar_media"});
+    channel.ownerId = firstString(object, {"owner_id"});
+    channel.isPublic = object.value(QStringLiteral("is_public")).toBool();
+    channel.linkedGroup = firstString(object, {"linked_group"});
+    channel.inviteToken = firstString(object, {"invite_token"});
+    channel.inviteLink = firstString(object, {"invite_link"});
+    channel.myRole = firstString(object, {"my_role"});
+    channel.myPermissions = static_cast<quint32>(
+        object.value(QStringLiteral("my_permissions")).toDouble(0));
+    channel.subscriberCount = object.value(QStringLiteral("subscriber_count")).toInt();
+    channel.createdAt = toInt64(object.value(QStringLiteral("created_at")));
+    channel.updatedAt = toInt64(object.value(QStringLiteral("updated_at")));
+    const QJsonArray members = object.value(QStringLiteral("members")).toArray();
+    for (const QJsonValue &value : members) {
+        if (value.isObject()) {
+            channel.members.append(parseChannelMember(value.toObject()));
+        }
+    }
+    if (channel.subscriberCount == 0 && !channel.members.isEmpty()) {
+        channel.subscriberCount = channel.members.size();
+    }
+    return channel;
+}
+
+GroupJoinRequestInfo parseGroupRequest(const QJsonObject &object)
+{
+    GroupJoinRequestInfo request;
+    request.groupId = firstString(object, {"group_id"});
+    request.userId = firstString(object, {"user_id"});
+    request.login = firstString(object, {"login"});
+    request.displayName = firstString(object, {"display_name"});
+    request.message = firstString(object, {"message"});
+    request.status = firstString(object, {"status"});
+    if (request.status.isEmpty()) {
+        request.status = QStringLiteral("pending");
+    }
+    request.createdAt = toInt64(object.value(QStringLiteral("created_at")));
+    return request;
+}
+
 } // namespace
 
 ApiClient::ApiClient(const Endpoint &endpoint, TlsPin *pin, QObject *parent)
@@ -213,6 +325,38 @@ void ApiClient::send(const QByteArray &method, const QString &path,
     if (!callback) {
         return;
     }
+    const QByteArray payload =
+        method == "GET" ? QByteArray()
+                        : QJsonDocument(body).toJson(QJsonDocument::Compact);
+    perform(method, path, payload, QByteArrayLiteral("application/json"), authenticated,
+            [this, callback](ApiResult<QByteArray> raw) {
+                if (raw.isError()) {
+                    callback(raw);
+                    return;
+                }
+                const QByteArray &data = raw.value();
+                if (!data.isEmpty()) {
+                    const QJsonObject root = parseObjectOr(data);
+                    const QJsonValue version =
+                        root.value(QStringLiteral("protocol_version"));
+                    if (!version.isUndefined() && version.toInt() != m_protocolVersion) {
+                        emit protocolVersionMismatch(version.toInt());
+                        callback(ApiResult<QByteArray>::fail(
+                            ApiError::protocol(QStringLiteral("protocol_version_mismatch"))));
+                        return;
+                    }
+                }
+                callback(raw);
+            });
+}
+
+void ApiClient::perform(const QByteArray &method, const QString &path,
+                        const QByteArray &payload, const QByteArray &contentType,
+                        bool authenticated, RawCallback callback)
+{
+    if (!callback) {
+        return;
+    }
     if (!m_endpoint.isValid()) {
         callback(ApiResult<QByteArray>::fail(
             ApiError::protocol(QStringLiteral("invalid_endpoint"))));
@@ -227,7 +371,9 @@ void ApiClient::send(const QByteArray &method, const QString &path,
     }
 
     QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QString::fromLatin1(contentType.isEmpty() ? "application/json"
+                                                                : contentType.constData()));
     request.setRawHeader("Accept", "application/json");
     request.setRawHeader("User-Agent", "MINI-Messenger");
     request.setRawHeader("X-Protocol-Version", QByteArray::number(m_protocolVersion));
@@ -243,10 +389,6 @@ void ApiClient::send(const QByteArray &method, const QString &path,
         ssl.setProtocol(QSsl::TlsV1_3);
         request.setSslConfiguration(ssl);
     }
-
-    const QByteArray payload =
-        method == "GET" ? QByteArray()
-                        : QJsonDocument(body).toJson(QJsonDocument::Compact);
 
     QNetworkReply *reply = nullptr;
     if (method == "GET") {
@@ -339,17 +481,6 @@ void ApiClient::send(const QByteArray &method, const QString &path,
         if (tls.isError()) {
             callback(ApiResult<QByteArray>::fail(tls));
             return;
-        }
-
-        if (!data.isEmpty()) {
-            const QJsonObject root = parseObjectOr(data);
-            const QJsonValue version = root.value(QStringLiteral("protocol_version"));
-            if (!version.isUndefined() && version.toInt() != m_protocolVersion) {
-                emit protocolVersionMismatch(version.toInt());
-                callback(ApiResult<QByteArray>::fail(
-                    ApiError::protocol(QStringLiteral("protocol_version_mismatch"))));
-                return;
-            }
         }
 
         callback(ApiResult<QByteArray>::ok(data));
@@ -838,6 +969,777 @@ void ApiClient::lookupUser(const QString &login, Callback<AccountProfile> callba
         }
         callback(ApiResult<AccountProfile>::ok(parseProfile(root)));
     });
+}
+
+void ApiClient::listGroups(Callback<QList<GroupInfo>> callback)
+{
+    send("GET", QStringLiteral("/api/v1/groups"), {}, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<QList<GroupInfo>>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<QList<GroupInfo>>::fail(error));
+                 return;
+             }
+             QList<GroupInfo> groups;
+             const QJsonArray array = root.value(QStringLiteral("groups")).toArray();
+             for (const QJsonValue &value : array) {
+                 if (value.isObject()) {
+                     groups.append(parseGroup(value.toObject()));
+                 }
+             }
+             callback(ApiResult<QList<GroupInfo>>::ok(groups));
+         });
+}
+
+void ApiClient::createGroup(const GroupCreateRequest &request, Callback<GroupInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("title"), request.title);
+    body.insert(QStringLiteral("about"), request.about);
+    if (!request.avatarMedia.isEmpty()) {
+        body.insert(QStringLiteral("avatar_media"), request.avatarMedia);
+    }
+    body.insert(QStringLiteral("is_public"), request.isPublic);
+    body.insert(QStringLiteral("join_by_request"), request.joinByRequest);
+    if (request.slowModeSec > 0) {
+        body.insert(QStringLiteral("slow_mode_sec"), request.slowModeSec);
+    }
+    QJsonArray members;
+    for (const QString &member : request.members) {
+        members.append(member);
+    }
+    body.insert(QStringLiteral("members"), members);
+
+    send("POST", QStringLiteral("/api/v1/groups"), body, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<GroupInfo>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<GroupInfo>::fail(error));
+                 return;
+             }
+             const QJsonObject group = root.value(QStringLiteral("group")).toObject();
+             callback(ApiResult<GroupInfo>::ok(parseGroup(group)));
+         });
+}
+
+void ApiClient::getGroup(const QString &groupId, Callback<GroupInfo> callback)
+{
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId));
+    send("GET", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<GroupInfo>::ok(
+            parseGroup(root.value(QStringLiteral("group")).toObject())));
+    });
+}
+
+void ApiClient::updateGroup(const QString &groupId, const GroupPatch &patch,
+                            Callback<GroupInfo> callback)
+{
+    QJsonObject body;
+    if (patch.title.has_value()) {
+        body.insert(QStringLiteral("title"), *patch.title);
+    }
+    if (patch.about.has_value()) {
+        body.insert(QStringLiteral("about"), *patch.about);
+    }
+    if (patch.avatarMedia.has_value()) {
+        body.insert(QStringLiteral("avatar_media"), *patch.avatarMedia);
+    }
+    if (patch.isPublic.has_value()) {
+        body.insert(QStringLiteral("is_public"), *patch.isPublic);
+    }
+    if (patch.joinByRequest.has_value()) {
+        body.insert(QStringLiteral("join_by_request"), *patch.joinByRequest);
+    }
+    if (patch.slowModeSec.has_value()) {
+        body.insert(QStringLiteral("slow_mode_sec"), *patch.slowModeSec);
+    }
+
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId));
+    send("PATCH", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<GroupInfo>::ok(
+            parseGroup(root.value(QStringLiteral("group")).toObject())));
+    });
+}
+
+void ApiClient::addGroupMember(const QString &groupId, const QString &userIdOrLogin,
+                               Callback<GroupMemberInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("user_id"), userIdOrLogin);
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId))
+        + QStringLiteral("/members");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupMemberInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupMemberInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<GroupMemberInfo>::ok(
+            parseGroupMember(root.value(QStringLiteral("member")).toObject())));
+    });
+}
+
+void ApiClient::removeGroupMember(const QString &groupId, const QString &userId, bool ban,
+                                  int durationHours, Callback<Empty> callback)
+{
+    QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/members/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(userId));
+    if (ban) {
+        path += QStringLiteral("?ban=true");
+        if (durationHours > 0) {
+            path += QStringLiteral("&duration_hours=") + QString::number(durationHours);
+        }
+    }
+    send("DELETE", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::setGroupRole(const QString &groupId, const QString &userId,
+                             const QString &role, quint32 permissions,
+                             Callback<GroupMemberInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("user_id"), userId);
+    body.insert(QStringLiteral("role"), role);
+    body.insert(QStringLiteral("permissions"), static_cast<qint64>(permissions));
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/role");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupMemberInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupMemberInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<GroupMemberInfo>::ok(
+            parseGroupMember(root.value(QStringLiteral("member")).toObject())));
+    });
+}
+
+void ApiClient::transferGroupOwnership(const QString &groupId, const QString &userId,
+                                       Callback<GroupInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("user_id"), userId);
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/transfer");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<GroupInfo>::ok(
+            parseGroup(root.value(QStringLiteral("group")).toObject())));
+    });
+}
+
+void ApiClient::createGroupInvite(const QString &groupId, Callback<GroupInvite> callback)
+{
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/invite");
+    send("POST", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupInvite>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupInvite>::fail(error));
+            return;
+        }
+        GroupInvite invite;
+        invite.groupId = firstString(root, {"group_id"});
+        invite.token = firstString(root, {"invite_token", "token"});
+        invite.link = firstString(root, {"invite_link", "link"});
+        callback(ApiResult<GroupInvite>::ok(invite));
+    });
+}
+
+void ApiClient::joinGroup(const QString &token, const QString &message,
+                          Callback<GroupJoinResult> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("token"), token);
+    if (!message.isEmpty()) {
+        body.insert(QStringLiteral("message"), message);
+    }
+    send("POST", QStringLiteral("/api/v1/groups/join"), body, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<GroupJoinResult>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<GroupJoinResult>::fail(error));
+                 return;
+             }
+             GroupJoinResult result;
+             result.status = firstString(root, {"status"});
+             result.group = parseGroup(root.value(QStringLiteral("group")).toObject());
+             if (result.group.groupId.isEmpty()) {
+                 result.group.groupId = firstString(root, {"group_id"});
+             }
+             callback(ApiResult<GroupJoinResult>::ok(result));
+         });
+}
+
+void ApiClient::requestGroupJoin(const QString &groupId, const QString &message,
+                                 Callback<GroupJoinRequestInfo> callback)
+{
+    QJsonObject body;
+    if (!message.isEmpty()) {
+        body.insert(QStringLiteral("message"), message);
+    }
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/request");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupJoinRequestInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupJoinRequestInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<GroupJoinRequestInfo>::ok(
+            parseGroupRequest(root.value(QStringLiteral("request")).toObject())));
+    });
+}
+
+void ApiClient::listGroupRequests(const QString &groupId, const QString &status,
+                                  Callback<QList<GroupJoinRequestInfo>> callback)
+{
+    QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/requests");
+    if (!status.isEmpty()) {
+        path += QStringLiteral("?status=") + QString::fromLatin1(QUrl::toPercentEncoding(status));
+    }
+    send("GET", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<QList<GroupJoinRequestInfo>>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<QList<GroupJoinRequestInfo>>::fail(error));
+            return;
+        }
+        QList<GroupJoinRequestInfo> requests;
+        const QJsonArray array = root.value(QStringLiteral("requests")).toArray();
+        for (const QJsonValue &value : array) {
+            if (value.isObject()) {
+                requests.append(parseGroupRequest(value.toObject()));
+            }
+        }
+        callback(ApiResult<QList<GroupJoinRequestInfo>>::ok(requests));
+    });
+}
+
+void ApiClient::approveGroupRequest(const QString &groupId, const QString &userId,
+                                    bool approve, Callback<GroupJoinRequestInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("user_id"), userId);
+    body.insert(QStringLiteral("action"),
+                approve ? QStringLiteral("approve") : QStringLiteral("reject"));
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/approve");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<GroupJoinRequestInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<GroupJoinRequestInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<GroupJoinRequestInfo>::ok(
+            parseGroupRequest(root.value(QStringLiteral("request")).toObject())));
+    });
+}
+
+void ApiClient::banGroupMember(const QString &groupId, const QString &userId, bool permanent,
+                               int durationHours, const QString &reason,
+                               Callback<Empty> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("user_id"), userId);
+    body.insert(QStringLiteral("permanent"), permanent);
+    if (!permanent && durationHours > 0) {
+        body.insert(QStringLiteral("duration_hours"), durationHours);
+    }
+    if (!reason.isEmpty()) {
+        body.insert(QStringLiteral("reason"), reason);
+    }
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/ban");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::unbanGroupMember(const QString &groupId, const QString &userId,
+                                 Callback<Empty> callback)
+{
+    const QString path = QStringLiteral("/api/v1/groups/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(groupId)) + QStringLiteral("/ban/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(userId));
+    send("DELETE", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::listChannels(Callback<QList<ChannelInfo>> callback)
+{
+    send("GET", QStringLiteral("/api/v1/channels"), {}, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<QList<ChannelInfo>>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<QList<ChannelInfo>>::fail(error));
+                 return;
+             }
+             QList<ChannelInfo> channels;
+             const QJsonArray array = root.value(QStringLiteral("channels")).toArray();
+             for (const QJsonValue &value : array) {
+                 if (value.isObject()) {
+                     channels.append(parseChannel(value.toObject()));
+                 }
+             }
+             callback(ApiResult<QList<ChannelInfo>>::ok(channels));
+         });
+}
+
+void ApiClient::createChannel(const ChannelCreateRequest &request,
+                              Callback<ChannelInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("title"), request.title);
+    body.insert(QStringLiteral("about"), request.about);
+    if (!request.avatarMedia.isEmpty()) {
+        body.insert(QStringLiteral("avatar_media"), request.avatarMedia);
+    }
+    body.insert(QStringLiteral("is_public"), request.isPublic);
+    if (!request.linkedGroup.isEmpty()) {
+        body.insert(QStringLiteral("linked_group"), request.linkedGroup);
+    }
+    send("POST", QStringLiteral("/api/v1/channels"), body, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<ChannelInfo>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<ChannelInfo>::fail(error));
+                 return;
+             }
+             callback(ApiResult<ChannelInfo>::ok(
+                 parseChannel(root.value(QStringLiteral("channel")).toObject())));
+         });
+}
+
+void ApiClient::getChannel(const QString &channelId, Callback<ChannelInfo> callback)
+{
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId));
+    send("GET", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<ChannelInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<ChannelInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<ChannelInfo>::ok(
+            parseChannel(root.value(QStringLiteral("channel")).toObject())));
+    });
+}
+
+void ApiClient::updateChannel(const QString &channelId, const ChannelPatch &patch,
+                              Callback<ChannelInfo> callback)
+{
+    QJsonObject body;
+    if (patch.title.has_value()) {
+        body.insert(QStringLiteral("title"), *patch.title);
+    }
+    if (patch.about.has_value()) {
+        body.insert(QStringLiteral("about"), *patch.about);
+    }
+    if (patch.avatarMedia.has_value()) {
+        body.insert(QStringLiteral("avatar_media"), *patch.avatarMedia);
+    }
+    if (patch.isPublic.has_value()) {
+        body.insert(QStringLiteral("is_public"), *patch.isPublic);
+    }
+    if (patch.linkedGroup.has_value()) {
+        body.insert(QStringLiteral("linked_group"), *patch.linkedGroup);
+    }
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId));
+    send("PATCH", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<ChannelInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<ChannelInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<ChannelInfo>::ok(
+            parseChannel(root.value(QStringLiteral("channel")).toObject())));
+    });
+}
+
+void ApiClient::deleteChannel(const QString &channelId, Callback<Empty> callback)
+{
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId));
+    send("DELETE", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<Empty>::fail(raw.error()));
+            return;
+        }
+        callback(ApiResult<Empty>::ok(Empty()));
+    });
+}
+
+void ApiClient::subscribeChannel(const QString &channelId, const QString &token,
+                                 Callback<QString> callback)
+{
+    QJsonObject body;
+    if (!token.isEmpty()) {
+        body.insert(QStringLiteral("token"), token);
+    }
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId))
+        + QStringLiteral("/subscribe");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<QString>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<QString>::fail(error));
+            return;
+        }
+        callback(ApiResult<QString>::ok(firstString(root, {"status"})));
+    });
+}
+
+void ApiClient::unsubscribeChannel(const QString &channelId, Callback<QString> callback)
+{
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId))
+        + QStringLiteral("/unsubscribe");
+    send("POST", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<QString>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<QString>::fail(error));
+            return;
+        }
+        callback(ApiResult<QString>::ok(firstString(root, {"status"})));
+    });
+}
+
+void ApiClient::listChannelMembers(const QString &channelId,
+                                   Callback<QList<ChannelMemberInfo>> callback)
+{
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId))
+        + QStringLiteral("/members");
+    send("GET", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<QList<ChannelMemberInfo>>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<QList<ChannelMemberInfo>>::fail(error));
+            return;
+        }
+        QList<ChannelMemberInfo> members;
+        const QJsonArray array = root.value(QStringLiteral("members")).toArray();
+        for (const QJsonValue &value : array) {
+            if (value.isObject()) {
+                members.append(parseChannelMember(value.toObject()));
+            }
+        }
+        callback(ApiResult<QList<ChannelMemberInfo>>::ok(members));
+    });
+}
+
+void ApiClient::setChannelRole(const QString &channelId, const QString &userId,
+                               const QString &role, quint32 permissions,
+                               Callback<ChannelMemberInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("user_id"), userId);
+    body.insert(QStringLiteral("role"), role);
+    body.insert(QStringLiteral("permissions"), static_cast<double>(permissions));
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId))
+        + QStringLiteral("/role");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<ChannelMemberInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<ChannelMemberInfo>::fail(error));
+            return;
+        }
+        callback(ApiResult<ChannelMemberInfo>::ok(
+            parseChannelMember(root.value(QStringLiteral("member")).toObject())));
+    });
+}
+
+void ApiClient::createChannelInvite(const QString &channelId, Callback<ChannelInvite> callback)
+{
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId))
+        + QStringLiteral("/invite");
+    send("POST", path, {}, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<ChannelInvite>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<ChannelInvite>::fail(error));
+            return;
+        }
+        ChannelInvite invite;
+        invite.channelId = firstString(root, {"channel_id"});
+        invite.token = firstString(root, {"invite_token"});
+        invite.link = firstString(root, {"invite_link"});
+        callback(ApiResult<ChannelInvite>::ok(invite));
+    });
+}
+
+void ApiClient::recordChannelView(const QString &channelId, const QString &postId,
+                                  Callback<ChannelViewInfo> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("post_id"), postId);
+    const QString path = QStringLiteral("/api/v1/channels/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(channelId))
+        + QStringLiteral("/view");
+    send("POST", path, body, true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<ChannelViewInfo>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<ChannelViewInfo>::fail(error));
+            return;
+        }
+        ChannelViewInfo view;
+        view.status = firstString(root, {"status"});
+        view.channelId = firstString(root, {"channel_id"});
+        view.postId = firstString(root, {"post_id"});
+        view.recorded = root.value(QStringLiteral("recorded")).toBool();
+        view.views = root.contains(QStringLiteral("views"))
+            ? root.value(QStringLiteral("views")).toInt()
+            : -1;
+        callback(ApiResult<ChannelViewInfo>::ok(view));
+    });
+}
+
+void ApiClient::mediaInit(qint64 totalSize, qint64 chunkSize,
+                          Callback<MediaUploadSession> callback)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("total_size"), static_cast<double>(totalSize));
+    body.insert(QStringLiteral("chunk_size"), static_cast<double>(chunkSize));
+    send("POST", QStringLiteral("/api/v1/media/init"), body, true,
+         [callback](ApiResult<QByteArray> raw) {
+             if (raw.isError()) {
+                 callback(ApiResult<MediaUploadSession>::fail(raw.error()));
+                 return;
+             }
+             QJsonObject root;
+             ApiError error;
+             if (!parseObject(raw.value(), &root, &error)) {
+                 callback(ApiResult<MediaUploadSession>::fail(error));
+                 return;
+             }
+             MediaUploadSession session;
+             session.uploadId = firstString(root, {"upload_id"});
+             session.totalSize =
+                 static_cast<qint64>(root.value(QStringLiteral("total_size")).toDouble());
+             session.chunkSize =
+                 static_cast<qint64>(root.value(QStringLiteral("chunk_size")).toDouble());
+             session.chunkCount = root.value(QStringLiteral("chunk_count")).toInt();
+             session.expiresAt =
+                 static_cast<qint64>(root.value(QStringLiteral("expires_at")).toDouble());
+             if (session.uploadId.isEmpty() || session.chunkCount <= 0) {
+                 callback(ApiResult<MediaUploadSession>::fail(
+                     ApiError::protocol(QStringLiteral("media_init_response"))));
+                 return;
+             }
+             callback(ApiResult<MediaUploadSession>::ok(session));
+         });
+}
+
+void ApiClient::mediaPutChunk(const QString &uploadId, int idx, const QByteArray &data,
+                              Callback<MediaChunkResult> callback)
+{
+    const QString path = QStringLiteral("/api/v1/media/chunk/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(uploadId)) + QLatin1Char('/')
+        + QString::number(idx);
+    perform("PUT", path, data, QByteArrayLiteral("application/octet-stream"), true,
+            [callback](ApiResult<QByteArray> raw) {
+                if (raw.isError()) {
+                    callback(ApiResult<MediaChunkResult>::fail(raw.error()));
+                    return;
+                }
+                QJsonObject root;
+                ApiError error;
+                if (!parseObject(raw.value(), &root, &error)) {
+                    callback(ApiResult<MediaChunkResult>::fail(error));
+                    return;
+                }
+                MediaChunkResult chunk;
+                chunk.uploadId = firstString(root, {"upload_id"});
+                chunk.idx = root.value(QStringLiteral("idx")).toInt(-1);
+                chunk.received =
+                    static_cast<qint64>(root.value(QStringLiteral("received")).toDouble());
+                chunk.receivedChunks =
+                    root.value(QStringLiteral("received_chunks")).toInt();
+                chunk.chunkCount = root.value(QStringLiteral("chunk_count")).toInt();
+                callback(ApiResult<MediaChunkResult>::ok(chunk));
+            });
+}
+
+void ApiClient::mediaComplete(const QString &uploadId,
+                              Callback<MediaCompleteResult> callback)
+{
+    const QString path = QStringLiteral("/api/v1/media/complete/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(uploadId));
+    send("POST", path, QJsonObject(), true, [callback](ApiResult<QByteArray> raw) {
+        if (raw.isError()) {
+            callback(ApiResult<MediaCompleteResult>::fail(raw.error()));
+            return;
+        }
+        QJsonObject root;
+        ApiError error;
+        if (!parseObject(raw.value(), &root, &error)) {
+            callback(ApiResult<MediaCompleteResult>::fail(error));
+            return;
+        }
+        MediaCompleteResult result;
+        result.uploadId = firstString(root, {"upload_id"});
+        result.totalSize =
+            static_cast<qint64>(root.value(QStringLiteral("total_size")).toDouble());
+        result.chunkCount = root.value(QStringLiteral("chunk_count")).toInt();
+        result.completedAt =
+            static_cast<qint64>(root.value(QStringLiteral("completed_at")).toDouble());
+        callback(ApiResult<MediaCompleteResult>::ok(result));
+    });
+}
+
+void ApiClient::mediaGetChunk(const QString &uploadId, int idx,
+                              Callback<QByteArray> callback)
+{
+    const QString path = QStringLiteral("/api/v1/media/")
+        + QString::fromLatin1(QUrl::toPercentEncoding(uploadId)) + QLatin1Char('/')
+        + QString::number(idx);
+    perform("GET", path, {}, {}, true,
+            [callback](ApiResult<QByteArray> raw) { callback(raw); });
 }
 
 } // namespace mini::net

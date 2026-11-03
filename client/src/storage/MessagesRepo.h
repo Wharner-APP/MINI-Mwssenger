@@ -37,6 +37,20 @@ public:
     Result<int> markRead(const QString &chatId);
     Result<bool> deleteLocal(const QString &clientMsgId);
     Result<QVector<Message>> search(const QString &query, int limit = 50) const;
+    Result<QVector<Message>> searchInChat(const QString &chatId, const QString &query,
+                                          int limit = 100) const;
+
+    // §37.3: re-seals the body and keeps the FTS row in sync.
+    Result<bool> updateBody(const QString &clientMsgId, const QString &body,
+                            qint64 editedAt);
+
+    // §38.2: at most kMaxPins per chat (enforced by MessageService).
+    static constexpr int kMaxPins = 20;
+    Result<int> pinCount(const QString &chatId) const;
+    Result<bool> setPinned(const QString &chatId, const QString &clientMsgId,
+                           qint64 pinnedAt, const QString &pinnedBy);
+    Result<bool> unpin(const QString &chatId, const QString &clientMsgId);
+    Result<QVector<Message>> pinned(const QString &chatId, int limit = 20) const;
 
     // §4.8: the FTS index is rebuilt from decrypted bodies at startup.
     Result<int> rebuildSearchIndex();

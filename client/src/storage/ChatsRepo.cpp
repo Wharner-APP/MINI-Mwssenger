@@ -1,14 +1,17 @@
 #include "storage/ChatsRepo.h"
 
+#include "domain/Media.h"
 #include "storage/Database.h"
 #include "storage/Sql.h"
+
+#include <QDateTime>
 
 namespace mini::storage {
 namespace {
 
 constexpr auto kColumns =
     "chat_id, kind, peer_login, title, last_message_ts, last_message_preview, "
-    "unread_count, pinned, muted, updated_at";
+    "unread_count, pinned, muted, updated_at, muted_until, archived";
 
 Chat readChat(const detail::Statement &statement, const BodyCipher &cipher)
 {
@@ -22,8 +25,15 @@ Chat readChat(const detail::Statement &statement, const BodyCipher &cipher)
     chat.lastMessagePreview = preview.isOk() ? preview.value() : QString();
     chat.unreadCount = statement.integer(6);
     chat.pinned = statement.boolean(7);
-    chat.muted = statement.boolean(8);
+    chat.mutedUntil = statement.int64(10);
+    // §32.4: a timed mute expires on read; muted_until == 0 with muted == 1
+    // means "forever".
+    const bool muteFlag = statement.boolean(8);
+    chat.muted = muteFlag
+        && (chat.mutedUntil <= 0
+            || chat.mutedUntil > QDateTime::currentMSecsSinceEpoch());
     chat.updatedAt = statement.int64(9);
+    chat.archived = statement.boolean(11);
     return chat;
 }
 
@@ -157,6 +167,39 @@ Result<bool> ChatsRepo::setMuted(const QString &chatId, bool muted)
     statement.bindText(2, chatId);
     if (statement.step() != SQLITE_DONE) {
         return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setMuted"));
+    }
+    return Result<bool>::ok(sqlite3_changes(m_db.handle()) > 0);
+}
+
+Result<bool> ChatsRepo::setMutedUntil(const QString &chatId, qint64 untilMs)
+{
+    const bool muted = untilMs != 0;
+    const qint64 stored = untilMs > 0 ? untilMs : 0;
+    detail::Statement statement(
+        m_db.handle(), "UPDATE chats SET muted = ?, muted_until = ? WHERE chat_id = ?");
+    if (!statement.isOk()) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setMutedUntil"));
+    }
+    statement.bindBool(1, muted);
+    statement.bindInt64(2, stored);
+    statement.bindText(3, chatId);
+    if (statement.step() != SQLITE_DONE) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setMutedUntil"));
+    }
+    return Result<bool>::ok(sqlite3_changes(m_db.handle()) > 0);
+}
+
+Result<bool> ChatsRepo::setArchived(const QString &chatId, bool archived)
+{
+    detail::Statement statement(m_db.handle(),
+                                "UPDATE chats SET archived = ? WHERE chat_id = ?");
+    if (!statement.isOk()) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setArchived"));
+    }
+    statement.bindBool(1, archived);
+    statement.bindText(2, chatId);
+    if (statement.step() != SQLITE_DONE) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "chats.setArchived"));
     }
     return Result<bool>::ok(sqlite3_changes(m_db.handle()) > 0);
 }
@@ -296,8 +339,8 @@ Result<bool> ChatsRepo::recalculateLastMessage(const QString &chatId)
     {
         detail::Statement latest(
             m_db.handle(),
-            "SELECT client_msg_id, body, local_ts, server_ts FROM messages"
-            " WHERE chat_id = ? AND state <> 'deleted_local'"
+            "SELECT client_msg_id, body, local_ts, server_ts, kind, media_name"
+            " FROM messages WHERE chat_id = ? AND state <> 'deleted_local'"
             " ORDER BY CASE WHEN server_ts > 0 THEN server_ts ELSE local_ts END DESC,"
             " client_msg_id DESC LIMIT 1");
         if (!latest.isOk()) {
@@ -313,7 +356,8 @@ Result<bool> ChatsRepo::recalculateLastMessage(const QString &chatId)
             if (plain.isError()) {
                 return Result<bool>::error(QStringLiteral("chats.recalculate.body"));
             }
-            preview = plain.value();
+            preview = mediaPreviewText(mediaKindFromString(latest.text(4)),
+                                       latest.text(5), plain.value());
             lastTs = latest.int64(2);
             const qint64 serverTs = latest.int64(3);
             if (serverTs > 0) {

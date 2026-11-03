@@ -1,0 +1,8 @@
+{
+  "packs": [
+    "mini.cats",
+    "mini.dogs",
+    "mini.pandas",
+    "mini.smiles"
+  ]
+}

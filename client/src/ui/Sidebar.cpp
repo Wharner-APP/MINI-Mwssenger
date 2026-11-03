@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -30,6 +31,21 @@ Sidebar::Sidebar(QWidget *parent) : QWidget(parent)
     m_newChat->setCursor(Qt::PointingHandCursor);
     m_newChat->setAccessibleName(tr("New chat"));
     m_newChat->setToolTip(tr("New chat"));
+
+    auto *newMenu = new QMenu(m_newChat);
+    newMenu->setObjectName(QStringLiteral("newChatMenu"));
+    QAction *newChatAction = newMenu->addAction(tr("New chat"));
+    QAction *newGroupAction = newMenu->addAction(tr("New group"));
+    QAction *joinGroupAction = newMenu->addAction(tr("Join by invite link"));
+    QAction *newChannelAction = newMenu->addAction(tr("New channel"));
+    QAction *joinChannelAction = newMenu->addAction(tr("Join channel by invite link"));
+    m_newChat->setMenu(newMenu);
+    m_newChat->setPopupMode(QToolButton::InstantPopup);
+    connect(newChatAction, &QAction::triggered, this, &Sidebar::newChatRequested);
+    connect(newGroupAction, &QAction::triggered, this, &Sidebar::newGroupRequested);
+    connect(newChannelAction, &QAction::triggered, this, &Sidebar::newChannelRequested);
+    connect(joinGroupAction, &QAction::triggered, this, &Sidebar::joinGroupRequested);
+    connect(joinChannelAction, &QAction::triggered, this, &Sidebar::joinChannelRequested);
 
     auto *header = new QHBoxLayout();
     header->setContentsMargins(0, 0, 0, 0);
@@ -55,7 +71,6 @@ Sidebar::Sidebar(QWidget *parent) : QWidget(parent)
     layout->addWidget(m_chatList, 1);
 
     connect(m_search, &QLineEdit::textChanged, m_chatList, &ChatList::setFilter);
-    connect(m_newChat, &QToolButton::clicked, this, &Sidebar::newChatRequested);
     connect(m_chatList, &ChatList::newChatRequested, this, &Sidebar::newChatRequested);
     connect(m_chatList, &ChatList::chatSelected, this, &Sidebar::chatSelected);
     connect(&Theme::instance(), &Theme::changed, this, &Sidebar::refreshIcons);

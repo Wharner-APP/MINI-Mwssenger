@@ -17,6 +17,7 @@ struct ChatItem
     bool pinned = false;
     bool muted = false;
     bool online = false;
+    bool archived = false;
 };
 
 class ChatListModel : public QAbstractListModel

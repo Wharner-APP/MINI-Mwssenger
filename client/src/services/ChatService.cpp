@@ -175,6 +175,42 @@ void ChatService::setMuted(const QString &chatId, bool muted, Done<bool> done)
     });
 }
 
+void ChatService::setMutedUntil(const QString &chatId, qint64 untilMs, Done<bool> done)
+{
+    if (!m_storage) {
+        done(Result<bool>::error(QStringLiteral("storage_unavailable")));
+        return;
+    }
+    auto future = m_storage->submit([chatId, untilMs](storage::Database &db) {
+        return storage::ChatsRepo(db).setMutedUntil(chatId, untilMs);
+    });
+    watch<Result<bool>>(this, future, [this, chatId, done = std::move(done)](Result<bool> result) {
+        if (result.isOk()) {
+            emit chatUpdated(chatId);
+            emit chatsChanged();
+        }
+        done(std::move(result));
+    });
+}
+
+void ChatService::setArchived(const QString &chatId, bool archived, Done<bool> done)
+{
+    if (!m_storage) {
+        done(Result<bool>::error(QStringLiteral("storage_unavailable")));
+        return;
+    }
+    auto future = m_storage->submit([chatId, archived](storage::Database &db) {
+        return storage::ChatsRepo(db).setArchived(chatId, archived);
+    });
+    watch<Result<bool>>(this, future, [this, chatId, done = std::move(done)](Result<bool> result) {
+        if (result.isOk()) {
+            emit chatUpdated(chatId);
+            emit chatsChanged();
+        }
+        done(std::move(result));
+    });
+}
+
 void ChatService::markRead(const QString &chatId, Done<int> done)
 {
     if (!m_storage) {

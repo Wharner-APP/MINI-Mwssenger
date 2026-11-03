@@ -45,6 +45,9 @@ public:
 
     void setPinned(const QString &chatId, bool pinned, Done<bool> done);
     void setMuted(const QString &chatId, bool muted, Done<bool> done);
+    // §32.4: 0 unmutes, a positive value is the expiry, -1 is forever.
+    void setMutedUntil(const QString &chatId, qint64 untilMs, Done<bool> done);
+    void setArchived(const QString &chatId, bool archived, Done<bool> done);
     void markRead(const QString &chatId, Done<int> done);
 
     // Exists locally either way; deleteHistory also removes every message.

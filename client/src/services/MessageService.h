@@ -5,6 +5,7 @@
 #include "domain/OutboxItem.h"
 #include "net/ApiError.h"
 #include "net/ApiTypes.h"
+#include "services/GroupCrypto.h"
 
 #include <QHash>
 #include <QJsonObject>
@@ -125,6 +126,12 @@ public:
     explicit MessageService(storage::StorageWorker *storage, QObject *parent = nullptr);
 
     void setCryptoSession(CryptoSession *session) { m_crypto = session; }
+    void setGroupCrypto(GroupCryptoSession *session) { m_groupCrypto = session; }
+    [[nodiscard]] GroupCryptoSession *groupCrypto() const { return m_groupCrypto; }
+    // Channels reuse the sender-key pipeline with the channel id as the
+    // container id (§29.9). Kept separate so group state never sees channels.
+    void setChannelCrypto(GroupCryptoSession *session) { m_channelCrypto = session; }
+    [[nodiscard]] GroupCryptoSession *channelCrypto() const { return m_channelCrypto; }
     void setTransport(MessageTransport *transport);
     [[nodiscard]] MessageTransport *transport() const { return m_transport; }
     // Stamped into every envelope header so the server can route the envelope
@@ -140,11 +147,55 @@ public:
     QString sendText(const QString &chatId, const QString &text,
                      const QString &replyToClientMsgId = QString(),
                      const QString &clientMsgId = QString());
+    // Same pipeline for an already uploaded file (§18.4 step 7). `caption`
+    // becomes the message body; the media descriptor travels inside the E2E
+    // envelope, never in the clear.
+    QString sendMedia(const QString &chatId, const QString &mediaId,
+                      const QString &caption,
+                      const QString &replyToClientMsgId = QString(),
+                      const QString &clientMsgId = QString());
+    // Built-in assets travel as a small JSON body and need no upload (§40.8-
+    // 40.9). mediaId keeps "pack/sticker" or the GIF catalog id.
+    QString sendSticker(const QString &chatId, const QString &packId,
+                        const QString &stickerId, const QString &title,
+                        const QString &replyToClientMsgId = QString(),
+                        const QString &clientMsgId = QString());
+    QString sendGif(const QString &chatId, const QString &gifId, const QString &title,
+                    const QString &replyToClientMsgId = QString(),
+                    const QString &clientMsgId = QString());
+    // §40.10: one message with 1..10 already uploaded media rows.
+    QString sendAlbum(const QString &chatId, const QStringList &mediaIds,
+                      const QString &caption,
+                      const QString &replyToClientMsgId = QString(),
+                      const QString &clientMsgId = QString());
+
+    // Encrypted control envelope to one peer (sender key distribution). It is
+    // never stored in the message history or the outbox.
+    void sendControlMessage(const QString &peerLogin, const QString &kind,
+                            const QByteArray &payload, Done<bool> done);
 
     // True only while the message has not left the device and is inside the
     // cancel window; never reports success for a message that was sent.
     void cancelSend(const QString &clientMsgId, Done<bool> done);
     void deleteLocal(const QString &clientMsgId, Done<bool> done);
+    // §37.4: own message inside 48 h, or an admin of the group/channel.
+    // Emits messageRemoved and a `message_delete` control event.
+    void deleteForEveryone(const QString &clientMsgId, bool asAdmin, Done<bool> done);
+    // §37.3: own text message inside 48 h. Re-seals the body, marks it edited
+    // and emits `message_edit` to the other participants.
+    void editMessage(const QString &clientMsgId, const QString &newBody, Done<bool> done);
+    // §37.2: copies one or more messages into target chats and keeps the
+    // original author in `forwardedFrom`.
+    void forwardMessages(const QStringList &sourceIds, const QStringList &targetChatIds,
+                         Done<int> done);
+    // §38.2: at most MessagesRepo::kMaxPins per chat.
+    void pinMessage(const QString &chatId, const QString &clientMsgId, Done<bool> done);
+    void unpinMessage(const QString &chatId, const QString &clientMsgId, Done<bool> done);
+    void listPinned(const QString &chatId, Done<QVector<Message>> done);
+    void searchInChat(const QString &chatId, const QString &query,
+                      Done<QVector<Message>> done);
+
+    static constexpr qint64 kActionWindowMs = 48LL * 60 * 60 * 1000;
     void loadHistory(const QString &chatId, const MessageCursor &before, int limit,
                      Done<QVector<Message>> done);
     void markChatRead(const QString &chatId, Done<int> done);
@@ -157,25 +208,38 @@ signals:
     void messageAdded(const mini::Message &message);
     void messageUpdated(const mini::Message &message);
     void messageRemoved(const QString &clientMsgId, const QString &chatId);
+    void pinsChanged(const QString &chatId);
     // A failed send returns its text so the composer can restore it.
     void messageSendFailed(const QString &clientMsgId, const QString &chatId,
                            const QString &text, const QString &code);
+    // A decrypted pairwise control message (sender_key_distribution).
+    void controlMessageReceived(const QString &senderLogin, const QString &kind,
+                                const QByteArray &payload);
     void pendingChanged(int pending);
     void errorOccurred(const QString &code, const QString &detail);
 
 private:
+    QString enqueueMessage(const Message &message);
     void schedulePump(int delayMs);
     void pump();
     void sendHead(const OutboxItem &item);
     void markFailed(const OutboxItem &item, const QString &code);
     void handleSendFailure(const OutboxItem &item, const net::ApiError &error);
     void handleIncoming(const net::Envelope &envelope);
+    void handleGroupIncoming(const net::Envelope &envelope, const QString &senderLogin,
+                             bool keyPrepared);
     void handleAcknowledged(const QString &clientMsgId, const QString &chatId);
     void handleDelivered(const QString &clientMsgId, const QString &chatId, qint64 at);
     void handleReadReceipt(const QString &chatId, const QStringList &clientMsgIds);
+    void sendChatEvent(const QString &chatId, const QString &kind,
+                       const QJsonObject &payload);
+    void applyIncomingEvent(const QString &kind, const QString &chatId,
+                            const QByteArray &plain, const QString &sender);
 
     storage::StorageWorker *m_storage = nullptr;
     CryptoSession *m_crypto = nullptr;
+    GroupCryptoSession *m_groupCrypto = nullptr;
+    GroupCryptoSession *m_channelCrypto = nullptr;
     MessageTransport *m_transport = nullptr;
     QVector<QMetaObject::Connection> m_transportConnections;
     QTimer m_pumpTimer;

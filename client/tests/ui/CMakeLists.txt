@@ -4,7 +4,11 @@ set(MINI_UI_TEST_TARGETS
     test_about_dialog
     test_diagnostics
     test_main_window_services
-    test_auth_dialog_login)
+    test_auth_dialog_login
+    test_group_ui
+    test_channel_ui
+    test_media_viewer
+    test_picker_ui)
 
 foreach(test_target IN LISTS MINI_UI_TEST_TARGETS)
     add_executable(${test_target} ${test_target}.cpp)

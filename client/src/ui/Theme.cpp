@@ -290,6 +290,11 @@ QMainWindow, #appShell { background: @bgBase; }
 #chatView { background: @bgChat; }
 #chatHeader { background: @bgChat; border-bottom: 1px solid @border; }
 #composerBar { background: @bgChat; border-top: 1px solid @border; }
+#composerPicker { background: @bgList; border-top: 1px solid @border; }
+#emojiGrid, #stickerGrid, #gifScroll { background: transparent; border: none; }
+#emojiGrid::item:hover, #stickerGrid::item:hover { background: @bgSurface; border-radius: 8px; }
+#stickerPreview { background: @bgSurface; border: 1px solid @border; border-radius: 10px; color: @textTertiary; }
+QPushButton[miniRole="gifItem"] { background: @bgSurface; border: 1px solid @border; border-radius: 10px; padding: 4px; color: @textSecondary; }
 QLabel { background: transparent; color: @textPrimary; }
 QLabel[miniRole="title"] { font-family: "@displayFamily"; font-size: @titlePx; font-weight: 600; color: @textPrimary; }
 QLabel[miniRole="subtitle"] { font-family: "@displayFamily"; font-size: @subtitlePx; color: @textSecondary; }

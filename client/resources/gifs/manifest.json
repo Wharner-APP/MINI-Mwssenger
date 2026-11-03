@@ -1,0 +1,78 @@
+{
+  "id": "mini.gifs",
+  "title": "GIF",
+  "items": [
+    {
+      "id": "bounce",
+      "title": "Прыжок",
+      "category": "Реакции",
+      "file": "bounce.gif"
+    },
+    {
+      "id": "heartbeat",
+      "title": "Сердце",
+      "category": "Реакции",
+      "file": "heartbeat.gif"
+    },
+    {
+      "id": "spin",
+      "title": "Звезда",
+      "category": "Реакции",
+      "file": "spin.gif"
+    },
+    {
+      "id": "fire",
+      "title": "Огонь",
+      "category": "Реакции",
+      "file": "fire.gif"
+    },
+    {
+      "id": "thumbs",
+      "title": "Класс",
+      "category": "Реакции",
+      "file": "thumbs.gif"
+    },
+    {
+      "id": "confetti",
+      "title": "Конфетти",
+      "category": "Праздник",
+      "file": "confetti.gif"
+    },
+    {
+      "id": "gift",
+      "title": "Подарок",
+      "category": "Праздник",
+      "file": "gift.gif"
+    },
+    {
+      "id": "sparkle",
+      "title": "Искры",
+      "category": "Праздник",
+      "file": "sparkle.gif"
+    },
+    {
+      "id": "rain",
+      "title": "Дождь",
+      "category": "Природа",
+      "file": "rain.gif"
+    },
+    {
+      "id": "snow",
+      "title": "Снег",
+      "category": "Природа",
+      "file": "snow.gif"
+    },
+    {
+      "id": "sun",
+      "title": "Солнце",
+      "category": "Природа",
+      "file": "sun.gif"
+    },
+    {
+      "id": "waves",
+      "title": "Волны",
+      "category": "Природа",
+      "file": "waves.gif"
+    }
+  ]
+}

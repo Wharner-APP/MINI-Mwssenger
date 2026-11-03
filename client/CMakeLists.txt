@@ -38,7 +38,14 @@ file(GLOB_RECURSE MINI_HEADERS CONFIGURE_DEPENDS
 file(GLOB_RECURSE MINI_RESOURCE_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
     "resources/icons/*.svg"
     "resources/fonts/*.ttf"
-    "resources/fonts/*.txt")
+    "resources/fonts/*.txt"
+    "resources/stickers/*.json"
+    "resources/stickers/*.ministicker"
+    "resources/stickers/*/*.png"
+    "resources/stickers/*/*.json"
+    "resources/gifs/*.gif"
+    "resources/gifs/*.json"
+    "resources/emoji/*.json")
 
 add_library(mini_client_lib STATIC ${MINI_SOURCES} ${MINI_HEADERS})
 target_include_directories(mini_client_lib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -49,6 +56,10 @@ target_link_libraries(mini_client_lib PUBLIC
     Qt6::Concurrent
     unofficial-sodium::sodium
     unofficial::sqlite3::sqlite3)
+if(TARGET Qt6::CorePrivate)
+    target_link_libraries(mini_client_lib PUBLIC Qt6::CorePrivate)
+    target_compile_definitions(mini_client_lib PUBLIC MINI_HAVE_ZIP=1)
+endif()
 if(TARGET Qt6::WebEngineWidgets AND TARGET Qt6::WebChannel)
     target_link_libraries(mini_client_lib PUBLIC Qt6::WebEngineWidgets Qt6::WebChannel)
     target_compile_definitions(mini_client_lib PUBLIC MINI_HAVE_WEBENGINE=1)

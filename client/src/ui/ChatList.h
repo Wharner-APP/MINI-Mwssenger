@@ -36,7 +36,7 @@ class ChatList : public QWidget
     Q_OBJECT
 
 public:
-    enum class FilterMode { All, Unread, Pinned };
+    enum class FilterMode { All, Unread, Pinned, Archived };
 
     explicit ChatList(QWidget *parent = nullptr);
 
@@ -88,6 +88,9 @@ signals:
     void globalSearchRequested(const QString &query);
     void pinToggled(const QString &chatId, bool pinned);
     void muteToggled(const QString &chatId, bool muted);
+    // §32.4: 0 unmutes, a positive value is the expiry, -1 is forever.
+    void muteUntilRequested(const QString &chatId, qint64 untilMs);
+    void archiveToggled(const QString &chatId, bool archived);
     void markReadRequested(const QString &chatId);
     void historyClearRequested(const QString &chatId);
     void chatDeleteRequested(const QString &chatId, bool deleteHistory);
@@ -111,6 +114,7 @@ private:
     QToolButton *m_allFilter = nullptr;
     QToolButton *m_unreadFilter = nullptr;
     QToolButton *m_pinnedFilter = nullptr;
+    QToolButton *m_archivedFilter = nullptr;
     QButtonGroup *m_filterGroup = nullptr;
     services::ChatService *m_chatService = nullptr;
     services::SearchService *m_searchService = nullptr;

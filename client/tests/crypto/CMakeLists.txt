@@ -3,7 +3,8 @@ set(MINI_CRYPTO_TEST_TARGETS
     test_identity_keys
     test_x3dh
     test_double_ratchet
-    test_safety_number)
+    test_safety_number
+    test_sender_key)
 
 foreach(test_target IN LISTS MINI_CRYPTO_TEST_TARGETS)
     add_executable(${test_target} ${test_target}.cpp)

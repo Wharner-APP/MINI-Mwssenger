@@ -12,7 +12,8 @@ namespace {
 
 constexpr auto kColumns =
     "client_msg_id, chat_id, server_msg_id, sender_login, body, state, outgoing, "
-    "local_ts, server_ts, reply_to";
+    "local_ts, server_ts, reply_to, kind, media_id, media_name, media_size, "
+    "media_duration_ms, edited_at, forwarded_from";
 constexpr auto kEffectiveTs = "CASE WHEN server_ts > 0 THEN server_ts ELSE local_ts END";
 
 // FTS5 rejects raw user input as a query, so every token becomes a quoted
@@ -42,6 +43,13 @@ Message readMessage(const detail::Statement &statement, int offset = 0)
     message.localTs = statement.int64(offset + 7);
     message.serverTs = statement.int64(offset + 8);
     message.replyToClientMsgId = statement.text(offset + 9);
+    message.kind = mediaKindFromString(statement.text(offset + 10));
+    message.mediaId = statement.text(offset + 11);
+    message.mediaName = statement.text(offset + 12);
+    message.mediaSize = statement.int64(offset + 13);
+    message.mediaDurationMs = statement.int64(offset + 14);
+    message.editedAt = statement.int64(offset + 15);
+    message.forwardedFrom = statement.text(offset + 16);
     return message;
 }
 
@@ -125,8 +133,10 @@ Result<bool> MessagesRepo::insert(const Message &message)
         m_db.handle(),
         R"sql(INSERT OR IGNORE INTO messages(
                 client_msg_id, chat_id, server_msg_id, sender_login, body, state,
-                outgoing, local_ts, server_ts, reply_to)
-              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?))sql");
+                outgoing, local_ts, server_ts, reply_to, kind, media_id,
+                media_name, media_size, media_duration_ms, edited_at,
+                forwarded_from)
+              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))sql");
     if (!statement.isOk()) {
         return Result<bool>::error(detail::sqlError(m_db.handle(), "messages.insert"));
     }
@@ -140,6 +150,13 @@ Result<bool> MessagesRepo::insert(const Message &message)
     statement.bindInt64(8, message.localTs);
     statement.bindInt64(9, message.serverTs);
     statement.bindTextOrNull(10, message.replyToClientMsgId);
+    statement.bindText(11, mediaKindToString(message.kind));
+    statement.bindText(12, message.mediaId);
+    statement.bindText(13, message.mediaName);
+    statement.bindInt64(14, message.mediaSize);
+    statement.bindInt64(15, message.mediaDurationMs);
+    statement.bindInt64(16, message.editedAt);
+    statement.bindText(17, message.forwardedFrom);
 
     if (statement.step() != SQLITE_DONE) {
         return Result<bool>::error(detail::sqlError(m_db.handle(), "messages.insert"));
@@ -408,7 +425,9 @@ Result<QVector<Message>> MessagesRepo::search(const QString &query, int limit) c
     const int pageSize = qBound(1, limit, 500);
     const QString sql = QStringLiteral(
                             "SELECT m.client_msg_id, m.chat_id, m.server_msg_id, m.sender_login, "
-                            "m.body, m.state, m.outgoing, m.local_ts, m.server_ts, m.reply_to "
+                            "m.body, m.state, m.outgoing, m.local_ts, m.server_ts, m.reply_to, "
+                            "m.kind, m.media_id, m.media_name, m.media_size, "
+                            "m.media_duration_ms "
                             "FROM temp.messages_fts JOIN messages m "
                             "ON m.rowid = temp.messages_fts.rowid "
                             "WHERE messages_fts MATCH ? AND m.state <> 'deleted_local' "
@@ -435,6 +454,189 @@ Result<QVector<Message>> MessagesRepo::search(const QString &query, int limit) c
     }
     if (rc != SQLITE_DONE) {
         return Result<QVector<Message>>::error(detail::sqlError(m_db.handle(), "messages.search"));
+    }
+    return Result<QVector<Message>>::ok(messages);
+}
+
+Result<QVector<Message>> MessagesRepo::searchInChat(const QString &chatId,
+                                                    const QString &query, int limit) const
+{
+    const QString match = ftsQuery(query);
+    if (match.isEmpty() || chatId.isEmpty()) {
+        return Result<QVector<Message>>::ok({});
+    }
+    if (auto indexed = ensureSearchIndex(); indexed.isError()) {
+        return Result<QVector<Message>>::error(indexed.error());
+    }
+    const int pageSize = qBound(1, limit, 500);
+    const QString sql = QStringLiteral(
+        "SELECT m.client_msg_id, m.chat_id, m.server_msg_id, m.sender_login, m.body, "
+        "m.state, m.outgoing, m.local_ts, m.server_ts, m.reply_to, m.kind, m.media_id, "
+        "m.media_name, m.media_size, m.media_duration_ms, m.edited_at, m.forwarded_from "
+        "FROM temp.messages_fts JOIN messages m ON m.rowid = temp.messages_fts.rowid "
+        "WHERE messages_fts MATCH ? AND m.chat_id = ? AND m.state <> 'deleted_local' "
+        "ORDER BY rank LIMIT ?");
+    detail::Statement statement(m_db.handle(), sql.toUtf8().constData());
+    if (!statement.isOk()) {
+        return Result<QVector<Message>>::error(
+            detail::sqlError(m_db.handle(), "messages.searchInChat"));
+    }
+    statement.bindText(1, match);
+    statement.bindText(2, chatId);
+    statement.bindInt(3, pageSize);
+
+    QVector<Message> messages;
+    int rc = statement.step();
+    while (rc == SQLITE_ROW) {
+        Message message = readMessage(statement);
+        auto body =
+            m_cipher.decrypt(statement.blob(4), messageAad(message.chatId, message.clientMsgId));
+        if (body.isError()) {
+            return Result<QVector<Message>>::error(
+                QStringLiteral("cannot decrypt message %1").arg(message.clientMsgId));
+        }
+        message.body = body.value();
+        messages.push_back(message);
+        rc = statement.step();
+    }
+    if (rc != SQLITE_DONE) {
+        return Result<QVector<Message>>::error(
+            detail::sqlError(m_db.handle(), "messages.searchInChat"));
+    }
+    return Result<QVector<Message>>::ok(messages);
+}
+
+Result<bool> MessagesRepo::updateBody(const QString &clientMsgId, const QString &body,
+                                      qint64 editedAt)
+{
+    if (auto indexed = ensureSearchIndex(); indexed.isError()) {
+        return indexed;
+    }
+    return m_db.transaction([&](Database &tx) -> Result<bool> {
+        detail::Statement row(tx.handle(),
+                              "SELECT rowid, chat_id FROM messages WHERE client_msg_id = ?");
+        if (!row.isOk()) {
+            return Result<bool>::error(detail::sqlError(tx.handle(), "messages.updateBody"));
+        }
+        row.bindText(1, clientMsgId);
+        if (row.step() != SQLITE_ROW) {
+            return Result<bool>::ok(false);
+        }
+        const qint64 rowid = row.int64(0);
+        const QString chatId = row.text(1);
+        const auto sealed = m_cipher.encrypt(body, messageAad(chatId, clientMsgId));
+        if (sealed.isError()) {
+            return Result<bool>::error(sealed.error());
+        }
+        detail::Statement update(
+            tx.handle(),
+            "UPDATE messages SET body = ?, edited_at = ? WHERE client_msg_id = ?");
+        if (!update.isOk()) {
+            return Result<bool>::error(detail::sqlError(tx.handle(), "messages.updateBody"));
+        }
+        update.bindBlob(1, sealed.value());
+        update.bindInt64(2, editedAt);
+        update.bindText(3, clientMsgId);
+        if (update.step() != SQLITE_DONE) {
+            return Result<bool>::error(detail::sqlError(tx.handle(), "messages.updateBody"));
+        }
+        detail::Statement fts(
+            tx.handle(), "UPDATE temp.messages_fts SET body = ? WHERE rowid = ?");
+        if (!fts.isOk()) {
+            return Result<bool>::error(detail::sqlError(tx.handle(), "messages.updateBody.fts"));
+        }
+        fts.bindText(1, body);
+        fts.bindInt64(2, rowid);
+        if (fts.step() != SQLITE_DONE) {
+            return Result<bool>::error(detail::sqlError(tx.handle(), "messages.updateBody.fts"));
+        }
+        return Result<bool>::ok(true);
+    });
+}
+
+Result<int> MessagesRepo::pinCount(const QString &chatId) const
+{
+    detail::Statement statement(m_db.handle(),
+                                "SELECT COUNT(*) FROM chat_pins WHERE chat_id = ?");
+    if (!statement.isOk()) {
+        return Result<int>::error(detail::sqlError(m_db.handle(), "pins.count"));
+    }
+    statement.bindText(1, chatId);
+    if (statement.step() != SQLITE_ROW) {
+        return Result<int>::error(detail::sqlError(m_db.handle(), "pins.count"));
+    }
+    return Result<int>::ok(statement.integer(0));
+}
+
+Result<bool> MessagesRepo::setPinned(const QString &chatId, const QString &clientMsgId,
+                                     qint64 pinnedAt, const QString &pinnedBy)
+{
+    detail::Statement statement(
+        m_db.handle(),
+        "INSERT OR REPLACE INTO chat_pins(chat_id, client_msg_id, pinned_at, pinned_by) "
+        "VALUES(?, ?, ?, ?)");
+    if (!statement.isOk()) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "pins.set"));
+    }
+    statement.bindText(1, chatId);
+    statement.bindText(2, clientMsgId);
+    statement.bindInt64(3, pinnedAt);
+    statement.bindText(4, pinnedBy);
+    if (statement.step() != SQLITE_DONE) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "pins.set"));
+    }
+    return Result<bool>::ok(true);
+}
+
+Result<bool> MessagesRepo::unpin(const QString &chatId, const QString &clientMsgId)
+{
+    detail::Statement statement(
+        m_db.handle(),
+        "DELETE FROM chat_pins WHERE chat_id = ? AND client_msg_id = ?");
+    if (!statement.isOk()) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "pins.unpin"));
+    }
+    statement.bindText(1, chatId);
+    statement.bindText(2, clientMsgId);
+    if (statement.step() != SQLITE_DONE) {
+        return Result<bool>::error(detail::sqlError(m_db.handle(), "pins.unpin"));
+    }
+    return Result<bool>::ok(sqlite3_changes(m_db.handle()) > 0);
+}
+
+Result<QVector<Message>> MessagesRepo::pinned(const QString &chatId, int limit) const
+{
+    QString columns = QString::fromLatin1(kColumns);
+    columns.replace(QStringLiteral(", "), QStringLiteral(", m."));
+    columns.prepend(QStringLiteral("m."));
+    const QString sql =
+        QStringLiteral("SELECT %1, p.pinned_at FROM chat_pins p JOIN messages m "
+                       "ON m.client_msg_id = p.client_msg_id "
+                       "WHERE p.chat_id = ? AND m.state <> 'deleted_local' "
+                       "ORDER BY p.pinned_at DESC LIMIT ?")
+            .arg(columns);
+    detail::Statement statement(m_db.handle(), sql.toUtf8().constData());
+    if (!statement.isOk()) {
+        return Result<QVector<Message>>::error(detail::sqlError(m_db.handle(), "pins.list"));
+    }
+    statement.bindText(1, chatId);
+    statement.bindInt(2, qBound(1, limit, MessagesRepo::kMaxPins));
+    QVector<Message> messages;
+    int rc = statement.step();
+    while (rc == SQLITE_ROW) {
+        Message message = readMessage(statement);
+        auto body =
+            m_cipher.decrypt(statement.blob(4), messageAad(message.chatId, message.clientMsgId));
+        if (body.isError()) {
+            continue;
+        }
+        message.body = body.value();
+        message.pinnedAt = statement.int64(17);
+        messages.push_back(message);
+        rc = statement.step();
+    }
+    if (rc != SQLITE_DONE) {
+        return Result<QVector<Message>>::error(detail::sqlError(m_db.handle(), "pins.list"));
     }
     return Result<QVector<Message>>::ok(messages);
 }

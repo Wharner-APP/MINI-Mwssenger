@@ -1,5 +1,7 @@
 #pragma once
 
+#include "domain/Media.h"
+
 #include <QString>
 
 namespace mini {
@@ -25,12 +27,24 @@ struct Message
     QString chatId;
     QString serverMsgId;
     QString senderLogin;
-    QString body;
+    QString body; // text, or the caption of a media message
     QString replyToClientMsgId;
+    MediaKind kind = MediaKind::Text;
+    QString mediaId; // empty for text; otherwise the media row key
+    QString mediaName;
+    qint64 mediaSize = 0;
+    qint64 mediaDurationMs = 0;
     MessageState state = MessageState::Queued;
     bool outgoing = true;
     qint64 localTs = 0;
     qint64 serverTs = 0;
+    // §37.3: non-zero once the body has been edited; the bubble shows the
+    // "edited" label.
+    qint64 editedAt = 0;
+    // §37.2: original author carried by a forwarded copy.
+    QString forwardedFrom;
+    // §38.2: set by the pins query; not stored in the messages row.
+    qint64 pinnedAt = 0;
 };
 
 // Cursor for paged history. The timestamp is server_ts once the message is

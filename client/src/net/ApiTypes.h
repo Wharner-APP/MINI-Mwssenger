@@ -108,6 +108,30 @@ struct SendResult {
     QStringList rejected;
 };
 
+// Media staging (§30.5.2): the server is an opaque relay for ciphertext.
+struct MediaUploadSession {
+    QString uploadId;
+    qint64 totalSize = 0;
+    qint64 chunkSize = 0;
+    int chunkCount = 0;
+    qint64 expiresAt = 0;
+};
+
+struct MediaChunkResult {
+    QString uploadId;
+    int idx = -1;
+    qint64 received = 0;
+    int receivedChunks = 0;
+    int chunkCount = 0;
+};
+
+struct MediaCompleteResult {
+    QString uploadId;
+    qint64 totalSize = 0;
+    int chunkCount = 0;
+    qint64 completedAt = 0;
+};
+
 struct AckResult {
     QStringList acked;
 };
@@ -165,6 +189,137 @@ struct DeleteAccountRequest {
     QString login;
     QByteArray passwordKey;
     QString confirmation;
+};
+
+// ---- Groups (§30.5, §42) ------------------------------------------------
+
+struct GroupMemberInfo {
+    QString userId;
+    QString login;
+    QString displayName;
+    QString role = QStringLiteral("member");
+    quint32 permissions = 0;
+    qint64 joinedAt = 0;
+    qint64 mutedUntil = 0;
+};
+
+struct GroupInfo {
+    QString groupId;
+    QString title;
+    QString about;
+    QString avatarMedia;
+    QString ownerId;
+    bool isPublic = false;
+    int slowModeSec = 0;
+    bool joinByRequest = false;
+    QString inviteToken;
+    QString inviteLink;
+    QString myRole;
+    quint32 myPermissions = 0;
+    int memberCount = 0;
+    qint64 createdAt = 0;
+    qint64 updatedAt = 0;
+    QList<GroupMemberInfo> members;
+    QString requestStatus;
+};
+
+struct GroupCreateRequest {
+    QString title;
+    QString about;
+    QString avatarMedia;
+    bool isPublic = false;
+    bool joinByRequest = false;
+    int slowModeSec = 0;
+    QStringList members; // user ids or logins
+};
+
+struct GroupPatch {
+    std::optional<QString> title;
+    std::optional<QString> about;
+    std::optional<QString> avatarMedia;
+    std::optional<bool> isPublic;
+    std::optional<bool> joinByRequest;
+    std::optional<int> slowModeSec;
+};
+
+struct GroupJoinRequestInfo {
+    QString groupId;
+    QString userId;
+    QString login;
+    QString displayName;
+    QString message;
+    QString status = QStringLiteral("pending");
+    qint64 createdAt = 0;
+};
+
+struct GroupInvite {
+    QString groupId;
+    QString token;
+    QString link;
+};
+
+struct GroupJoinResult {
+    QString status; // joined | pending | already_member
+    GroupInfo group;
+};
+
+// ---- Channels (§30.5, §43) ---------------------------------------------
+
+struct ChannelMemberInfo {
+    QString userId;
+    QString login;
+    QString displayName;
+    QString role = QStringLiteral("subscriber");
+    quint32 permissions = 0;
+    qint64 joinedAt = 0;
+};
+
+struct ChannelInfo {
+    QString channelId;
+    QString title;
+    QString about;
+    QString avatarMedia;
+    QString ownerId;
+    bool isPublic = false;
+    QString linkedGroup;
+    QString inviteToken;
+    QString inviteLink;
+    QString myRole; // empty when the caller is not subscribed
+    quint32 myPermissions = 0;
+    int subscriberCount = 0;
+    qint64 createdAt = 0;
+    qint64 updatedAt = 0;
+    QList<ChannelMemberInfo> members;
+};
+
+struct ChannelCreateRequest {
+    QString title;
+    QString about;
+    QString avatarMedia;
+    bool isPublic = false;
+    QString linkedGroup;
+};
+
+struct ChannelPatch {
+    std::optional<QString> title;
+    std::optional<QString> about;
+    std::optional<QString> avatarMedia;
+    std::optional<bool> isPublic;
+    std::optional<QString> linkedGroup;
+};
+
+struct ChannelInvite {
+    QString channelId;
+    QString token;
+    QString link;
+};
+
+struct ChannelViewInfo {
+    QString status;
+    QString channelId;
+    QString postId;
+    bool recorded = false;
+    int views = -1;
 };
 
 } // namespace mini::net

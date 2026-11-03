@@ -1,9 +1,12 @@
 #pragma once
 
 #include "domain/Chat.h"
+#include "domain/Message.h"
 
 #include <QMainWindow>
 #include <QSet>
+#include <QStringList>
+#include <QVector>
 
 class QAction;
 class QMenu;
@@ -13,6 +16,8 @@ class QSystemTrayIcon;
 namespace mini {
 
 class ChatView;
+class GroupInfoPanel;
+class MediaViewer;
 class ProfilePanel;
 class Rail;
 class Settings;
@@ -20,11 +25,16 @@ class SettingsDialog;
 class Sidebar;
 
 namespace services {
+class ChannelService;
 class ChatService;
 class ContactService;
 class DiagnosticsService;
+class GroupService;
+class MediaService;
 class MessageService;
 class SearchService;
+class StickerService;
+struct MediaPreparation;
 }
 
 namespace storage {
@@ -51,8 +61,15 @@ public:
     // connects them to widgets. Every setter is safe to call with nullptr.
     void setChatService(services::ChatService *service);
     void setContactService(services::ContactService *service);
+    void setGroupService(services::GroupService *service);
+    void setChannelService(services::ChannelService *service);
     void setMessageService(services::MessageService *service);
+    void setMediaService(services::MediaService *service);
+    void setStickerService(services::StickerService *service);
     void setSearchService(services::SearchService *service);
+    [[nodiscard]] services::MediaService *mediaService() const { return m_media; }
+    [[nodiscard]] services::StickerService *stickerService() const { return m_stickers; }
+    [[nodiscard]] MediaViewer *mediaViewer() const { return m_viewer; }
     void setStorageWorker(storage::StorageWorker *worker);
     void setWsClient(net::WsClient *ws);
 
@@ -61,6 +78,15 @@ public:
     void openDirectChatForLogin(const QString &login);
     void openProfile();
     void openDiagnostics();
+    // Group flows (S17 / S19). Both are also reachable from the sidebar menu
+    // and the chat header button.
+    void openNewGroupDialog();
+    void openGroupInfo(const QString &groupId);
+    void promptJoinGroup();
+    // Channel flows (S18 / S20, §43).
+    void openNewChannelDialog();
+    void openChannelInfo(const QString &channelId);
+    void promptJoinChannel();
 
     [[nodiscard]] QSystemTrayIcon *trayIcon() const { return m_tray; }
     [[nodiscard]] QMenu *trayMenu() const { return m_trayMenu; }
@@ -89,9 +115,31 @@ private:
     void promptNewChat();
     void openChat(const Chat &chat);
     void openChatById(const QString &chatId);
+    void jumpToMessage(const QString &chatId, const QString &clientMsgId);
+    void openForwardDialog(const QStringList &sourceIds);
+    void refreshPins();
     void refreshChatList();
     void saveDraft();
     void sendMessage(const QString &text);
+    // Media pipeline: pick/drop -> prepare -> preview -> upload -> sendMedia.
+    void attachFiles();
+    void handleFiles(const QStringList &paths);
+    void handleAlbum(const QStringList &paths);
+    void uploadAlbum(const QString &chatId, const QVector<services::MediaPreparation> &items,
+                     const QString &caption, const QString &replyTo);
+    void processNextFile();
+    void sendSticker(const QString &packId, const QString &stickerId);
+    void sendGif(const QString &gifId);
+    void installStickerPack();
+    void removeStickerPack(const QString &packId);
+    void saveEmojiRecents(const QStringList &characters);
+    void sendPreparedFile(const services::MediaPreparation &prep, const QString &path,
+                          const QString &caption, bool asFile, const QString &replyTo);
+    void openMedia(const QString &clientMsgId);
+    void showViewer(const QString &mediaId, const QString &path);
+    void showAlbumViewer(const QString &clientMsgId);
+    [[nodiscard]] MediaViewer *ensureViewer();
+    void saveMediaAs(const QString &mediaId);
     void setupShortcuts();
     void subscribePresence();
     void restoreFromTray();
@@ -110,8 +158,15 @@ private:
 
     services::ChatService *m_chatService = nullptr;
     services::ContactService *m_contactService = nullptr;
+    services::GroupService *m_groupService = nullptr;
+    services::ChannelService *m_channelService = nullptr;
     services::MessageService *m_messageService = nullptr;
+    services::MediaService *m_media = nullptr;
+    services::StickerService *m_stickers = nullptr;
     services::SearchService *m_searchService = nullptr;
+    MediaViewer *m_viewer = nullptr;
+    QStringList m_fileQueue;
+    Message m_pendingUpload;
     storage::StorageWorker *m_storage = nullptr;
     net::WsClient *m_ws = nullptr;
     QSet<QString> m_presenceLogins;
@@ -124,6 +179,7 @@ private:
     QAction *m_traySignOut = nullptr;
 
     Chat m_currentChat;
+    QString m_pendingJumpId;
     bool m_quitting = false;
     int m_trayAvailableOverride = -1;
 };

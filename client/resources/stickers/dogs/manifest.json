@@ -1,0 +1,48 @@
+{
+  "id": "mini.dogs",
+  "title": "Собаки",
+  "author": "MINI",
+  "cover": "dogs-happy.png",
+  "stickers": [
+    {
+      "id": "dogs-happy",
+      "title": "Радость",
+      "file": "dogs-happy.png"
+    },
+    {
+      "id": "dogs-love",
+      "title": "Любовь",
+      "file": "dogs-love.png"
+    },
+    {
+      "id": "dogs-laugh",
+      "title": "Смех",
+      "file": "dogs-laugh.png"
+    },
+    {
+      "id": "dogs-sad",
+      "title": "Грусть",
+      "file": "dogs-sad.png"
+    },
+    {
+      "id": "dogs-angry",
+      "title": "Злость",
+      "file": "dogs-angry.png"
+    },
+    {
+      "id": "dogs-wink",
+      "title": "Подмигивание",
+      "file": "dogs-wink.png"
+    },
+    {
+      "id": "dogs-surprised",
+      "title": "Удивление",
+      "file": "dogs-surprised.png"
+    },
+    {
+      "id": "dogs-cool",
+      "title": "Круто",
+      "file": "dogs-cool.png"
+    }
+  ]
+}

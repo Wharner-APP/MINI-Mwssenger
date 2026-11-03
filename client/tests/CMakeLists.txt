@@ -5,6 +5,7 @@ set(MINI_TEST_TARGETS
     test_log
     test_i18n
     test_composer
+    test_markdown
     test_singleinstance
     test_mainwindow)
 

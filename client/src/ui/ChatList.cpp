@@ -21,6 +21,7 @@
 #include <QListWidget>
 #include <QListView>
 #include <QMenu>
+#include <QPair>
 #include <QPushButton>
 #include <QShortcut>
 #include <QStackedLayout>
@@ -77,6 +78,7 @@ ChatItem itemFor(const Chat &chat)
     item.unread = chat.unreadCount;
     item.pinned = chat.pinned;
     item.muted = chat.muted;
+    item.archived = chat.archived;
     return item;
 }
 
@@ -136,12 +138,14 @@ ChatList::ChatList(QWidget *parent) : QWidget(parent)
     m_allFilter = makeFilterButton(QStringLiteral("filterAll"), tr("All"), this);
     m_unreadFilter = makeFilterButton(QStringLiteral("filterUnread"), tr("Unread"), this);
     m_pinnedFilter = makeFilterButton(QStringLiteral("filterPinned"), tr("Pinned"), this);
+    m_archivedFilter = makeFilterButton(QStringLiteral("filterArchived"), tr("Archive"), this);
     m_allFilter->setChecked(true);
     m_filterGroup = new QButtonGroup(this);
     m_filterGroup->setExclusive(true);
     m_filterGroup->addButton(m_allFilter);
     m_filterGroup->addButton(m_unreadFilter);
     m_filterGroup->addButton(m_pinnedFilter);
+    m_filterGroup->addButton(m_archivedFilter);
 
     auto *filterRow = new QHBoxLayout();
     filterRow->setContentsMargins(0, 0, 0, 0);
@@ -149,6 +153,7 @@ ChatList::ChatList(QWidget *parent) : QWidget(parent)
     filterRow->addWidget(m_allFilter);
     filterRow->addWidget(m_unreadFilter);
     filterRow->addWidget(m_pinnedFilter);
+    filterRow->addWidget(m_archivedFilter);
     filterRow->addStretch(1);
 
     m_searchPanel = new QFrame(this);
@@ -196,6 +201,8 @@ ChatList::ChatList(QWidget *parent) : QWidget(parent)
             setFilterMode(FilterMode::Unread);
         } else if (button == m_pinnedFilter) {
             setFilterMode(FilterMode::Pinned);
+        } else if (button == m_archivedFilter) {
+            setFilterMode(FilterMode::Archived);
         } else {
             setFilterMode(FilterMode::All);
         }
@@ -268,6 +275,8 @@ QToolButton *ChatList::filterButton(FilterMode mode) const
         return m_unreadFilter;
     case FilterMode::Pinned:
         return m_pinnedFilter;
+    case FilterMode::Archived:
+        return m_archivedFilter;
     case FilterMode::All:
     default:
         return m_allFilter;
@@ -387,8 +396,34 @@ QMenu *ChatList::buildChatMenu(const QString &chatId)
     markRead->setObjectName(QStringLiteral("chatMarkReadAction"));
     QAction *pin = menu->addAction(chat.pinned ? tr("Unpin") : tr("Pin"));
     pin->setObjectName(QStringLiteral("chatPinAction"));
-    QAction *mute = menu->addAction(chat.muted ? tr("Unmute") : tr("Mute"));
+    QAction *archive = menu->addAction(chat.archived ? tr("Unarchive") : tr("Archive"));
+    archive->setObjectName(QStringLiteral("chatArchiveAction"));
+    QAction *mute = menu->addAction(tr("Mute"));
     mute->setObjectName(QStringLiteral("chatMuteAction"));
+    auto *muteMenu = new QMenu(menu);
+    muteMenu->setObjectName(QStringLiteral("chatMuteMenu"));
+    mute->setMenu(muteMenu);
+    if (chat.muted) {
+        QAction *unmute = muteMenu->addAction(tr("Unmute"));
+        unmute->setObjectName(QStringLiteral("chatUnmuteAction"));
+        connect(unmute, &QAction::triggered, this,
+                [this, chatId] { emit muteUntilRequested(chatId, 0); });
+        muteMenu->addSeparator();
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QVector<QPair<QString, qint64>> durations{
+        {tr("For 1 hour"), now + 60LL * 60 * 1000},
+        {tr("For 8 hours"), now + 8LL * 60 * 60 * 1000},
+        {tr("For 1 day"), now + 24LL * 60 * 60 * 1000},
+        {tr("Forever"), -1},
+    };
+    for (const auto &duration : durations) {
+        QAction *action = muteMenu->addAction(duration.first);
+        action->setObjectName(QStringLiteral("chatMuteDurationAction"));
+        const qint64 until = duration.second;
+        connect(action, &QAction::triggered, this,
+                [this, chatId, until] { emit muteUntilRequested(chatId, until); });
+    }
     QAction *copyLogin = menu->addAction(tr("Copy login"));
     copyLogin->setObjectName(QStringLiteral("chatCopyLoginAction"));
     QAction *copyTitle = menu->addAction(tr("Copy name"));
@@ -406,8 +441,8 @@ QMenu *ChatList::buildChatMenu(const QString &chatId)
     connect(pin, &QAction::triggered, this, [this, chatId, pinned = chat.pinned] {
         emit pinToggled(chatId, !pinned);
     });
-    connect(mute, &QAction::triggered, this, [this, chatId, muted = chat.muted] {
-        emit muteToggled(chatId, !muted);
+    connect(archive, &QAction::triggered, this, [this, chatId, archived = chat.archived] {
+        emit archiveToggled(chatId, !archived);
     });
     connect(copyLogin, &QAction::triggered, this, [chat] {
         if (QClipboard *clipboard = QGuiApplication::clipboard()) {
@@ -606,6 +641,13 @@ void ChatList::rebuildItems()
     QVector<ChatItem> items;
     items.reserve(m_chats.size());
     for (const Chat &chat : m_chats) {
+        if (m_filterMode == FilterMode::Archived) {
+            if (!chat.archived) {
+                continue;
+            }
+        } else if (chat.archived) {
+            continue;
+        }
         if (m_filterMode == FilterMode::Unread && chat.unreadCount <= 0) {
             continue;
         }

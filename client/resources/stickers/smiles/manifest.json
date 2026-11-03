@@ -1,0 +1,48 @@
+{
+  "id": "mini.smiles",
+  "title": "Смайлики",
+  "author": "MINI",
+  "cover": "smiles-happy.png",
+  "stickers": [
+    {
+      "id": "smiles-happy",
+      "title": "Радость",
+      "file": "smiles-happy.png"
+    },
+    {
+      "id": "smiles-love",
+      "title": "Любовь",
+      "file": "smiles-love.png"
+    },
+    {
+      "id": "smiles-laugh",
+      "title": "Смех",
+      "file": "smiles-laugh.png"
+    },
+    {
+      "id": "smiles-sad",
+      "title": "Грусть",
+      "file": "smiles-sad.png"
+    },
+    {
+      "id": "smiles-angry",
+      "title": "Злость",
+      "file": "smiles-angry.png"
+    },
+    {
+      "id": "smiles-wink",
+      "title": "Подмигивание",
+      "file": "smiles-wink.png"
+    },
+    {
+      "id": "smiles-surprised",
+      "title": "Удивление",
+      "file": "smiles-surprised.png"
+    },
+    {
+      "id": "smiles-cool",
+      "title": "Круто",
+      "file": "smiles-cool.png"
+    }
+  ]
+}
